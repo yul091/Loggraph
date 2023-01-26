@@ -231,7 +231,7 @@ if __name__ == '__main__':
         len(train_graph_data), len(val_graph_data), len(test_graph_data), test_anomaly_rate))
 
     # Instantiate train & test dataloaders
-    if args.model_type.lower() == 'ae-dynamic':
+    if args.model_type == 'ae-dynamic':
         print("NO SHUFFLING FOR TRAIN DATA LOADER !!!")
         train_loader = DataLoader(
             train_graph_data, 
@@ -260,7 +260,7 @@ if __name__ == '__main__':
         num_workers=n_workers,
     )
 
-    if args.model_type.lower() in ['ae-dynamic', 'ae-anomalydae']:
+    if args.model_type in ['ae-dynamic', 'ae-anomalydae']:
         # Add number of nodes into hyperparameters
         hparams = Namespace(
             df=pd.DataFrame([]),
@@ -294,7 +294,7 @@ if __name__ == '__main__':
     #         if classification =='graph':
     #             model = GraphConv(config)
     #         else:
-    #             if args.model_type.lower().startswith('ae'):
+    #             if args.model_type.startswith('ae'):
     #                 model = AENodeConv(config)
     #             else:
     #                 model = NodeConv(config)
@@ -362,7 +362,7 @@ if __name__ == '__main__':
         if classification =='graph':
             model = GraphConv(hparams)
         elif classification == 'node':
-            if args.model_type.lower().startswith('ae'):
+            if args.model_type.startswith('ae'):
                 model = AENodeConv(hparams)
             else:
                 model = NodeConv(hparams)
@@ -437,7 +437,7 @@ if __name__ == '__main__':
     # model.hparams.lr = new_lr # update hparams of the model
 
     # Fitting the model
-    if args.model_type.lower() != 'ae-scan' and do_train:
+    if args.model_type != 'ae-scan' and do_train:
         trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
         print('{} - Fitted model {}'.format(
             datetime.now() - start, os.path.basename(checkpoint_dir)

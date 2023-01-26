@@ -11,11 +11,11 @@ SEED=2019
 N_GRAMS=8 # 8 for AIT dataset, 5 for BGL dataset
 NEG_RATE=1.5 # 1.5 for AIT dataset, 10 for BGL dataset
 TRAIN_BATCH=3
-EVAL_BATCH=8
+EVAL_BATCH=1 # large eval batch size is easy to blow up memory
 GRAD_CUM_STEPS=16
-PRETRAINED_MODEL=facebook/bart-large
+PRETRAINED_MODEL=facebook/bart-base
 OUT_DIR=dataset/NER/${DATA_NAME}-${N_GRAMS}grams-${NEG_RATE}neg
-CKPT_DIR=results/BART_seq2seq/${DATA_NAME}/${NUM_SHOTS}-shot-${STRATEGY}-${NEG_RATE}neg
+CKPT_DIR=results/${LABEL_METHOD}/${DATA_NAME}/${NUM_SHOTS}-shot-${STRATEGY}-${NEG_RATE}neg
 #############################################################################################
 
 ################################### For regex labeling ######################################
@@ -31,11 +31,11 @@ CKPT_DIR=results/BART_seq2seq/${DATA_NAME}/${NUM_SHOTS}-shot-${STRATEGY}-${NEG_R
 # GRAD_CUM_STEPS=16
 # PRETRAINED_MODEL=facebook/bart-large
 # OUT_DIR=/nfs/intern_data/yufli/dataset/NER/BGL-regex
-# CKPT_DIR=results/BART_seq2seq/${DATA_NAME}/regex
+# CKPT_DIR=results/${LABEL_METHOD}/${DATA_NAME}/regex
 #############################################################################################
 
 
-CUDA_VISIBLE_DEVICES=0 python NER.py \
+CUDA_VISIBLE_DEVICES=1 python NER.py \
     --gen_data ${DATA} \
     --data_name ${DATA_NAME} \
     --output_dir ${OUT_DIR} \

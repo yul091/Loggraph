@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import pandas as pd
+from copy import deepcopy
 from datetime import datetime
 from argparse import Namespace
 from typing import Dict, List, Union
@@ -18,8 +19,9 @@ from utils import (
     cal_aupr_score, 
     cal_accuracy, 
     cal_cls_report, 
-    classification_report,
+    # classification_report,
     to_dense_adj,
+    dense_to_sparse,
 )
 from models.graph_base import (
     Data,
@@ -210,6 +212,104 @@ class EdgeDetectionModel(pl.LightningModule):
         score = weight * torch.sigmoid(self.beta * s_ - self.mu)
         # print('score', score)
         return score
+    
+    def loss_func(self, x, x_, s, s_):
+        if self.model_type in ['ae-dominant', 'ae-conad', 'ae-dynamic']:
+            # attribute reconstruction loss
+            diff_attribute = torch.pow(x - x_, 2)
+            attribute_errors = torch.sqrt(torch.sum(diff_attribute, 1))
+            # structure reconstruction loss
+            diff_structure = torch.pow(s - s_, 2)
+            structure_errors = torch.sqrt(torch.sum(diff_structure, 1))
+            score = self.alpha * attribute_errors + (1 - self.alpha) * structure_errors
+            return score
+        elif self.model_type == 'ae-anomalydae':
+            # generate hyperparameter - structure penalty
+            reversed_adj = 1 - s
+            thetas = torch.where(
+                reversed_adj > 0, reversed_adj,
+                torch.full(s.shape, self.theta).to(self.device))
+            # generate hyperparameter - node penalty
+            reversed_attr = 1 - x
+            etas = torch.where(
+                reversed_attr == 1, reversed_attr,
+                torch.full(x.shape, self.eta).to(self.device))
+            # attribute reconstruction loss
+            diff_attribute = torch.pow(x_ - x, 2) * etas
+            attribute_errors = torch.sqrt(torch.sum(diff_attribute, 1))
+            # structure reconstruction loss
+            diff_structure = torch.pow(s_ - s, 2) * thetas
+            structure_errors = torch.sqrt(torch.sum(diff_structure, 1))
+            score = self.alpha * attribute_errors + (1 - self.alpha) * structure_errors
+            return score
+        else:
+            raise TypeError(f"Unsupported model type {self.model_type}")
+        
+        
+    def _data_augmentation(self, x: Tensor, adj: Adj):
+        """
+        Data augmentation on the input graph. Four types of
+        pseudo anomalies will be injected:
+            Attribute, deviated
+            Attribute, disproportionate
+            Structure, high-degree
+            Structure, outlying
+        
+        Parameters
+        -----------
+        x : note attribute matrix
+        adj : dense adjacency matrix
+
+        Returns
+        -------
+        feat_aug, adj_aug, label_aug : augmented
+            attribute matrix, adjacency matrix, and
+            pseudo anomaly label to train contrastive
+            graph representations
+        """
+        rate = self.r
+        num_added_edge = self.m
+        surround = self.k
+        scale_factor = self.f
+
+        adj_aug, feat_aug = deepcopy(adj), deepcopy(x)
+        num_nodes = adj_aug.shape[0]
+        label_aug = torch.zeros(num_nodes, dtype=torch.int32)
+
+        prob = torch.rand(num_nodes)
+        label_aug[prob < rate] = 1
+
+        # high-degree
+        n_hd = torch.sum(prob < rate / 4)
+        edges_mask = torch.rand(n_hd, num_nodes) < num_added_edge / num_nodes
+        edges_mask = edges_mask.to(self.device)
+        adj_aug[prob <= rate / 4, :] = edges_mask.float()
+        adj_aug[:, prob <= rate / 4] = edges_mask.float().T
+
+        # outlying
+        ol_mask = torch.logical_and(rate / 4 <= prob, prob < rate / 2)
+        torch.use_deterministic_algorithms(False)
+        adj_aug[ol_mask, :] = 0 # deterministic Bug
+        adj_aug[:, ol_mask] = 0
+        torch.use_deterministic_algorithms(True)
+
+        # deviated
+        dv_mask = torch.logical_and(rate / 2 <= prob, prob < rate * 3 / 4)
+        feat_c = feat_aug[torch.randperm(num_nodes)[:surround]]
+        ds = torch.cdist(feat_aug[dv_mask], feat_c)
+        feat_aug[dv_mask] = feat_c[torch.argmax(ds, 1)]
+
+        # disproportionate
+        mul_mask = torch.logical_and(rate * 3 / 4 <= prob, prob < rate * 7 / 8)
+        div_mask = rate * 7 / 8 <= prob
+        feat_aug[mul_mask] *= scale_factor
+        feat_aug[div_mask] /= scale_factor
+
+        edge_index_aug = dense_to_sparse(adj_aug)[0].to(self.device)
+        feat_aug = feat_aug.to(self.device)
+        label_aug = label_aug.to(self.device)
+        
+        return feat_aug, edge_index_aug, label_aug
 
     def neg_sampling(self, degrees: Tensor, i: int, j: int, s: Adj):
         if degrees.size()[0] == 2: 
@@ -293,7 +393,6 @@ class EdgeDetectionModel(pl.LightningModule):
         else:
             G = batch
             
-        # G = train_batch
         # Generate adjacency matrix
         if not G.edge_index.shape[-1]: # empty edge index
             # print("Empty edge index !!!")
@@ -308,54 +407,102 @@ class EdgeDetectionModel(pl.LightningModule):
             self.alpha = torch.std(G.s).detach() / (torch.std(G.x).detach() + torch.std(G.s).detach())
 
         # Forward pass
-        if self.model_type == 'dynamic':
-            h = self.forward(
+        if self.model_type.lower() == 'ae-dominant':
+            x_, s_ = self.forward(
+                x=G.x,
+                edge_index=G.edge_index,
+            )
+        elif self.model_type.lower() == 'ae-anomalydae':
+            x_, s_ = self.forward(
+                x=G.x,
+                edge_index=G.edge_index,
+                batch_size=G.num_nodes,
+            )
+        elif self.model_type.lower() == 'ae-conad':
+            x_aug, edge_index_aug, label_aug = self._data_augmentation(G.x, G.s)
+            h_aug = self.model.embed(x_aug, edge_index_aug)
+            h = self.model.embed(G.x, G.edge_index)
+            margin_loss = self.margin_loss_func(h, h, h_aug) * label_aug
+            margin_loss = torch.mean(margin_loss)
+            x_, s_ = self.model.reconstruct(h, G.edge_index)
+        elif self.model_type.lower() == 'ae-gcnae':
+            x_ = self.forward(
+                x=G.x, 
+                edge_index=G.edge_index,
+            )
+        elif self.model_type.lower() == 'ae-mlpae':
+            x_ = self.model(
+                x=G.x,
+            )
+        elif self.model_type.lower() == 'ae-scan':
+            scores = self.model(G)
+        elif self.model_type == 'dynamic':
+            x_ = self.forward(
                 x=G.x, 
                 edge_index=G.edge_index, 
                 batch=G.batch, 
                 num_graphs=G.num_graphs, # for generating position embedding
             ) # |V| X E
         else:
-            h = self.forward(
-                x=G.x, 
-                edge_index=G.edge_index,
-            ) # |V| X E
-        # print('output', h.shape)
+            raise NotImplementedError
         
         # Handling scores and loss
         labels = G.y
-        # Calculate loss and save to dict
-        loss, scores = self.margin_loss(h, G)
         
-        if self.multi_granularity and self.model_type == 'dynamic':
-            graph_feature = global_max_pool(h, G.batch)
-            # print("graph feature", graph_feature.shape)
-            # Handling average feature vector
-            targets = self.train_avg.expand(graph_feature.shape[0], -1) # B X E
-            if self.on_cuda:
-                targets = targets.cuda()
-            
-            # Calculate loss and save to dict
-            individual_loss = self.mse_loss(graph_feature, targets).sum(dim=-1) # B
-            avg_loss = individual_loss.sum() # float
-            loss = loss + self.global_weight * avg_loss # B
+        # Calculate loss and save to dict
+        if split == 'train' or split == 'val':
+            if self.model_type in ['ae-gcnae', 'ae-mlpae', 'ae-scan']:
+                if self.model_type != 'ae-scan':
+                    scores = torch.mean(F.mse_loss(x_, G.x, reduction='none'), dim=1) # |V|
+            elif self.model_type == 'dynamic':
+                loss, scores = self.margin_loss(x_, G) # |E|
+                if self.multi_granularity:
+                    x_graph = global_max_pool(x_, G.batch) # V X E -> B X E
+                    # Handling average feature vector
+                    targets = self.train_avg.expand(x_graph.shape[0], -1) # B X E
+                    if self.on_cuda:
+                        targets = targets.cuda()
+                    # Calculate loss and save to dict
+                    individual_loss = self.mse_loss(x_graph, targets).sum(dim=-1) # B
+                    avg_loss = individual_loss.sum() # float
+                    loss = loss + self.global_weight * avg_loss # B
+                    # Update train L2 distances
+                    if split == 'train':
+                        self.train_dists.extend(individual_loss.detach().tolist())
+            else:
+                scores = self.loss_func(G.x, x_, G.s, s_) # |V|
+                
+            # Store training score distribution for analysis
             if split == 'train':
-                # Update train L2 distances
-                self.train_dists.extend(individual_loss.detach().tolist())
+                self.decision_scores.extend(scores.detach().cpu().tolist())
+            
+            # Handling loss
+            if self.model_type == 'ae-conad':
+                loss = self.eta * torch.mean(scores) + (1 - self.eta) * margin_loss
+            else:
+                if self.model_type != 'dynamic':
+                    loss = torch.mean(scores)
+        else:
+            loss, scores = self.margin_loss(x_, G) # |E|
+            if self.model_type == 'dynamic' and self.multi_granularity:
+                x_graph = global_max_pool(x_, G.batch) # V X E -> B X E
+                # Handling average feature vector
+                targets = self.train_avg.expand(x_graph.shape[0], -1) # B X E
+                if self.on_cuda:
+                    targets = targets.cuda()
+                # Calculate loss and save to dict
+                individual_loss = self.mse_loss(x_graph, targets).sum(dim=-1) # B
+                avg_loss = individual_loss.sum() # float
+                loss = loss + self.global_weight * avg_loss # B
 
-        # Store training score distribution for analysis
-        if split == 'train':
-            self.decision_scores.extend(scores.detach().cpu().tolist())
-        if split == 'test':
             labels = G.y[:scores.shape[0]] # needed when some of the nodes are cut
-        # else:
-        #     loss = torch.mean(scores)
+        
         logging_dict = {'train_loss': loss.detach().item()}
         
         return {
             'loss': loss,
             'scores': scores,
-            'preds': graph_feature, 
+            'preds': x_, 
             'labels': labels,
             'log': logging_dict, # Tensorboard logging for training
             'progress_bar': logging_dict, # Progress bar logging for TQDM
@@ -366,9 +513,10 @@ class EdgeDetectionModel(pl.LightningModule):
         scores = event_scores.numpy() # N
         
         if split == 'train':
-            # Update average train feature vector
-            preds = [instance['preds'].detach().cpu() for instance in train_step_outputs] 
-            self.train_avg = torch.cat(preds, dim=0).mean(dim=0) 
+            if self.multi_granularity and self.model_type == 'dynamic':
+                # Update average train feature vector
+                preds = [instance['preds'].detach().cpu() for instance in train_step_outputs] 
+                self.train_avg = torch.cat(preds, dim=0).mean(dim=0) 
             # Update train dists and thresholds
             sorted_scores = sorted(scores)
             self.thre_max = max(scores)
