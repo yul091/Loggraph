@@ -44,6 +44,16 @@ class DynamicEdge(nn.Module):
             dropout=dropout,
             act=act,
         )
+        # Define edge score function parameters
+        self.p_a = nn.Parameter(torch.DoubleTensor(self.embed_dim), requires_grad=True)
+        self.p_b = nn.Parameter(torch.DoubleTensor(self.embed_dim), requires_grad=True)
+        self.reset_parameters()
+    
+    def reset_parameters(self):
+        p_a_ = self.p_a.unsqueeze(0)
+        nn.init.xavier_uniform_(p_a_.data, gain=1.414)
+        p_b_ = self.p_b.unsqueeze(0)
+        nn.init.xavier_uniform_(p_b_.data, gain=1.414)
 
 
     def forward(self, x: Tensor, edge_index: Adj, batch: Batch, num_graphs: int):

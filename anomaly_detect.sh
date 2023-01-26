@@ -1,13 +1,13 @@
 # Dynamic transformer + GCNAE
-DATANAME=AIT # AIT, BGL
+DATANAME=BGL # AIT, BGL
 LABEL_TECH=seq2seq # seq2seq, regex
 INTERVAL=0.5min
-TRAIN_BATCH_SIZE=32
-EVAL_BATCH_SIZE=32
+TRAIN_BATCH_SIZE=4
+EVAL_BATCH_SIZE=8
 WEIGHT_DECAY=5e-7
 MAX_LENGTH=1024
 LAMBDA=0.1
-LAYERS=3
+LAYERS=2
 CLASSIFICATION=edge
 GLOBAL_WEIGHT=1
 LR=1e-3
@@ -21,13 +21,13 @@ ROOT=dataset/${DATANAME}/${LABEL_TECH}-node-${INTERVAL}-template-bertembed
 ##################################################################################################################
 
 ############################################### Baseline Models #################################################
-MODEL_TYPE=addgraph # ae-gcnae, ae-mlpae, ae-dominant, ae-conad, ae-anomalydae, deeptralog, addgraph
+MODEL_TYPE=ae-anomalydae # ae-gcnae, ae-mlpae, ae-dominant, ae-conad, ae-anomalydae, deeptralog, addgraph
 MODEL_PATH=bert-base-uncased # facebook/bart-base gpt2, xlnet-base-cased
 CKPT=results/${DATANAME}/${LABEL_TECH}-${CLASSIFICATION}/${INTERVAL}/${MODEL_TYPE} # gcn, mlp, etc.
 ##################################################################################################################
 
 
-CUDA_VISIBLE_DEVICES=0 python main.py \
+CUDA_VISIBLE_DEVICES=1 python main.py \
     --root ${ROOT} \
     --checkpoint_dir ${CKPT} \
     --train_batch_size ${TRAIN_BATCH_SIZE} \

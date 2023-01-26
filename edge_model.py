@@ -75,10 +75,6 @@ class EdgeDetectionModel(pl.LightningModule):
         self.beta = model_kwargs.get('beta', 1.0)
         self.mu = model_kwargs.get('mu', 0.3)
         self.gamma = model_kwargs.get('gamma', 0.5)
-        # Define edge score function parameters
-        self.p_a = nn.Parameter(torch.DoubleTensor(self.embed_dim), requires_grad=True)
-        self.p_b = nn.Parameter(torch.DoubleTensor(self.embed_dim), requires_grad=True)
-        self.reset_parameters()
 
         # Models
         model_path = self._get_hparam(hparams, 'pretrained_model_path', 'facebook/bart-base')
@@ -189,13 +185,6 @@ class EdgeDetectionModel(pl.LightningModule):
         self.train_avg = torch.normal(mean=0, std=1, size=(self.embed_dim,)) # E
         self.save_hyperparameters()
         
-        
-    def reset_parameters(self):
-        p_a_ = self.p_a.unsqueeze(0)
-        nn.init.xavier_uniform_(p_a_.data, gain=1.414)
-        p_b_ = self.p_b.unsqueeze(0)
-        nn.init.xavier_uniform_(p_b_.data, gain=1.414)
-        
     @property
     def on_cuda(self):
         return next(self.parameters()).is_cuda
@@ -220,15 +209,10 @@ class EdgeDetectionModel(pl.LightningModule):
         return batch.from_data_list(data_list)
 
     def score_func(self, hidden: Tensor, i: int, j: int, weight: float):
-        # print('self.a: {}, self.b: {}'.format(self.p_a, self.p_b))
-        s = self.p_a * hidden[i] + self.p_b * hidden[j]
-        # print('s', s)
+        s = self.model.p_a * hidden[i] + self.model.p_b * hidden[j]
         s = F.dropout(s, self.dropout, training=self.training)
-        # print('s', s)
         s_ = torch.norm(s, 2).pow(2)
-        # print('s_', s_)
         score = weight * torch.sigmoid(self.beta * s_ - self.mu)
-        # print('score', score)
         return score
     
     def loss_func(self, x, x_, s, s_):
