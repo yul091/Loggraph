@@ -36,6 +36,7 @@ from models.CONAD import CONAD_Base
 from models.Anomaly_DAE import AnomalyDAE_Base
 from models.SCAN import SCAN
 from models.Dynamic_edge import DynamicEdge
+from models.DeepTraLog import DeepTraLog_Base
 
 
 class EdgeDetectionModel(pl.LightningModule):
@@ -143,6 +144,14 @@ class EdgeDetectionModel(pl.LightningModule):
                 eps=self.eps, 
                 mu=self.mu, 
                 contamination=self.contamination,
+            )
+        elif self.model_type == 'deeptralog':
+            self.model = DeepTraLog_Base(
+                in_dim=self.in_channels, 
+                hid_dim=self.out_channels, 
+                num_layers=self.layers, 
+                dropout=self.dropout,
+                act=self.act,
             )
         elif self.model_type == 'dynamic':
             self.model = DynamicEdge(
@@ -385,6 +394,17 @@ class EdgeDetectionModel(pl.LightningModule):
             weight_decay=self.weight_decay, # l2 regularization
         )
         return optimizer
+    
+    def global_objective(self, x_: Tensor, G: Union[Data, Batch]):
+        x_graph = global_max_pool(x_, G.batch) # V X E -> B X E
+        # Handling average feature vector
+        targets = self.train_avg.expand(x_graph.shape[0], -1) # B X E
+        if self.on_cuda:
+            targets = targets.cuda()
+        # Calculate loss and save to dict
+        individual_loss = self.mse_loss(x_graph, targets).sum(dim=-1) # B
+        avg_loss = individual_loss.sum() # float
+        return individual_loss, avg_loss
 
     def training_step(self, batch: Union[Data, Batch], batch_idx: int, split: str = 'train'): 
         # Sampling subgraph
@@ -436,6 +456,10 @@ class EdgeDetectionModel(pl.LightningModule):
             )
         elif self.model_type.lower() == 'ae-scan':
             scores = self.model(G)
+        elif self.model_type == 'deeptralog':
+            x_ = self.forward(
+                G = G,
+            )
         elif self.model_type == 'dynamic':
             x_ = self.forward(
                 x=G.x, 
@@ -451,27 +475,26 @@ class EdgeDetectionModel(pl.LightningModule):
         
         # Calculate loss and save to dict
         if split == 'train' or split == 'val':
-            if self.model_type in ['ae-gcnae', 'ae-mlpae', 'ae-scan']:
+            if self.model_type in ['ae-gcnae', 'ae-mlpae', 'ae-scan', 'deeptralog']:
                 if self.model_type != 'ae-scan':
                     scores = torch.mean(F.mse_loss(x_, G.x, reduction='none'), dim=1) # |V|
+                if self.model_type == 'deeptralog':
+                    individual_loss, loss = self.global_objective(x_, G)
+                    # Update train L2 distances
+                    if split == 'train':
+                        self.train_dists.extend(individual_loss.detach().tolist())
+                
             elif self.model_type == 'dynamic':
                 loss, scores = self.margin_loss(x_, G) # |E|
                 if self.multi_granularity:
-                    x_graph = global_max_pool(x_, G.batch) # V X E -> B X E
-                    # Handling average feature vector
-                    targets = self.train_avg.expand(x_graph.shape[0], -1) # B X E
-                    if self.on_cuda:
-                        targets = targets.cuda()
-                    # Calculate loss and save to dict
-                    individual_loss = self.mse_loss(x_graph, targets).sum(dim=-1) # B
-                    avg_loss = individual_loss.sum() # float
+                    individual_loss, avg_loss = self.global_objective(x_, G)
                     loss = loss + self.global_weight * avg_loss # B
                     # Update train L2 distances
                     if split == 'train':
                         self.train_dists.extend(individual_loss.detach().tolist())
             else:
                 scores = self.loss_func(G.x, x_, G.s, s_) # |V|
-                
+                    
             # Store training score distribution for analysis
             if split == 'train':
                 self.decision_scores.extend(scores.detach().cpu().tolist())
@@ -480,7 +503,7 @@ class EdgeDetectionModel(pl.LightningModule):
             if self.model_type == 'ae-conad':
                 loss = self.eta * torch.mean(scores) + (1 - self.eta) * margin_loss
             else:
-                if self.model_type != 'dynamic':
+                if self.model_type not in ['dynamic', 'deeptralog']:
                     loss = torch.mean(scores)
         else:
             loss, scores = self.margin_loss(x_, G) # |E|

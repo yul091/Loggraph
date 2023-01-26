@@ -103,20 +103,24 @@ if __name__ == '__main__':
     parser.add_argument('--output_dim', type=int, default=768)
     parser.add_argument('--alpha', type=float, default=0.5)
     parser.add_argument('--lambda_seq', type=float, default=0.1)
-    parser.add_argument(
-        '--model_type', type=str, default='gcn', 
-        choices=[
-            'gcn', 'sage', 'gin', 'gat', 'transformer', 
-            'ae-dominant', 
-            'ae-anomalydae', 
-            'ae-conad', 
-            'ae-gcnae', 
-            'ae-mlpae', 
-            'ae-scan', 
-            'ae-dynamic',
-            'dynamic',
-        ], 
-        help='graph convolutional model')
+    parser.add_argument('--model_type', type=str, default='gcn', 
+                        choices=[
+                            'gcn', 
+                            'sage', 
+                            'gin', 
+                            'gat', 
+                            'transformer', 
+                            'ae-dominant', 
+                            'ae-anomalydae', 
+                            'ae-conad', 
+                            'ae-gcnae', 
+                            'ae-mlpae', 
+                            'ae-scan', 
+                            'ae-dynamic',
+                            'deeptralog',
+                            'dynamic',
+                        ], 
+                        help='graph convolutional model')
     
     args = parser.parse_args()
 

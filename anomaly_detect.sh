@@ -14,20 +14,20 @@ LR=1e-3
 ROOT=dataset/${DATANAME}/${LABEL_TECH}-node-${INTERVAL}-template-bertembed
 
 ################################################ Dynamic Models ##################################################
-MODEL_TYPE=dynamic # ae-gcnae, ae-mlpae, ae-dominant, ae-scan, ae-conad, ae-anomalydae
-MODEL_PATH=bert-base-uncased # facebook/bart-base, gpt2, xlnet-base-cased, bert-base-uncased, bert-base-cased
-# CKPT=results/${DATANAME}/${LABEL_TECH}-${CLASSIFICATION}/${INTERVAL}/dynamic-${MODEL_PATH}
-CKPT=results/${DATANAME}/${LABEL_TECH}-${CLASSIFICATION}/${INTERVAL}/dynamic-${MODEL_PATH}-multi_granularity
+# MODEL_TYPE=dynamic # ae-gcnae, ae-mlpae, ae-dominant, ae-scan, ae-conad, ae-anomalydae
+# MODEL_PATH=bert-base-uncased # facebook/bart-base, gpt2, xlnet-base-cased, bert-base-uncased, bert-base-cased
+# # CKPT=results/${DATANAME}/${LABEL_TECH}-${CLASSIFICATION}/${INTERVAL}/dynamic-${MODEL_PATH}
+# CKPT=results/${DATANAME}/${LABEL_TECH}-${CLASSIFICATION}/${INTERVAL}/dynamic-${MODEL_PATH}-multi_granularity
 ##################################################################################################################
 
 ############################################### Baseline Models #################################################
-# MODEL_TYPE=ae-anomalydae # ae-gcnae, ae-mlpae, ae-dominant, ae-scan, ae-conad, ae-anomalydae
-# MODEL_PATH=bert-base-uncased # facebook/bart-base gpt2, xlnet-base-cased
-# CKPT=results/${DATANAME}/${LABEL_TECH}-${CLASSIFICATION}/${INTERVAL}/${MODEL_TYPE} # OR: gcn, mlp, etc.
+MODEL_TYPE=deeptralog # ae-gcnae, ae-mlpae, ae-dominant, ae-scan, ae-conad, ae-anomalydae, deeptralog
+MODEL_PATH=bert-base-uncased # facebook/bart-base gpt2, xlnet-base-cased
+CKPT=results/${DATANAME}/${LABEL_TECH}-${CLASSIFICATION}/${INTERVAL}/${MODEL_TYPE} # gcn, mlp, etc.
 ##################################################################################################################
 
 
-CUDA_VISIBLE_DEVICES=1 python main.py \
+CUDA_VISIBLE_DEVICES=0 python main.py \
     --root ${ROOT} \
     --checkpoint_dir ${CKPT} \
     --train_batch_size ${TRAIN_BATCH_SIZE} \
