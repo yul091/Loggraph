@@ -14,14 +14,14 @@ LR=1e-3
 ROOT=dataset/${DATANAME}/${LABEL_TECH}-node-${INTERVAL}-template-bertembed
 
 ################################################ Dynamic Models ##################################################
-# MODEL_TYPE=dynamic # ae-gcnae, ae-mlpae, ae-dominant, ae-scan, ae-conad, ae-anomalydae
+# MODEL_TYPE=dynamic # ae-gcnae, ae-mlpae, ae-dominant, ae-conad, ae-anomalydae
 # MODEL_PATH=bert-base-uncased # facebook/bart-base, gpt2, xlnet-base-cased, bert-base-uncased, bert-base-cased
 # # CKPT=results/${DATANAME}/${LABEL_TECH}-${CLASSIFICATION}/${INTERVAL}/dynamic-${MODEL_PATH}
 # CKPT=results/${DATANAME}/${LABEL_TECH}-${CLASSIFICATION}/${INTERVAL}/dynamic-${MODEL_PATH}-multi_granularity
 ##################################################################################################################
 
 ############################################### Baseline Models #################################################
-MODEL_TYPE=deeptralog # ae-gcnae, ae-mlpae, ae-dominant, ae-scan, ae-conad, ae-anomalydae, deeptralog
+MODEL_TYPE=addgraph # ae-gcnae, ae-mlpae, ae-dominant, ae-conad, ae-anomalydae, deeptralog, addgraph
 MODEL_PATH=bert-base-uncased # facebook/bart-base gpt2, xlnet-base-cased
 CKPT=results/${DATANAME}/${LABEL_TECH}-${CLASSIFICATION}/${INTERVAL}/${MODEL_TYPE} # gcn, mlp, etc.
 ##################################################################################################################

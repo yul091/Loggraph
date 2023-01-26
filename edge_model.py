@@ -37,6 +37,7 @@ from models.Anomaly_DAE import AnomalyDAE_Base
 from models.SCAN import SCAN
 from models.Dynamic_edge import DynamicEdge
 from models.DeepTraLog import DeepTraLog_Base
+from models.AddGraph import AddGraph_Base
 
 
 class EdgeDetectionModel(pl.LightningModule):
@@ -153,6 +154,14 @@ class EdgeDetectionModel(pl.LightningModule):
                 dropout=self.dropout,
                 act=self.act,
             )
+        elif self.model_type == 'addgraph':
+            self.model = AddGraph_Base(
+                in_dim=self.in_channels, 
+                hid_dim=self.out_channels, 
+                num_layers=self.layers, 
+                dropout=self.dropout,
+                act=self.act,
+            )  
         elif self.model_type == 'dynamic':
             self.model = DynamicEdge(
                 model_path=model_path,
@@ -456,7 +465,7 @@ class EdgeDetectionModel(pl.LightningModule):
             )
         elif self.model_type.lower() == 'ae-scan':
             scores = self.model(G)
-        elif self.model_type == 'deeptralog':
+        elif self.model_type in ['deeptralog', 'addgraph']:
             x_ = self.forward(
                 G = G,
             )
@@ -484,7 +493,7 @@ class EdgeDetectionModel(pl.LightningModule):
                     if split == 'train':
                         self.train_dists.extend(individual_loss.detach().tolist())
                 
-            elif self.model_type == 'dynamic':
+            elif self.model_type in 'dynamic':
                 loss, scores = self.margin_loss(x_, G) # |E|
                 if self.multi_granularity:
                     individual_loss, avg_loss = self.global_objective(x_, G)
@@ -492,6 +501,8 @@ class EdgeDetectionModel(pl.LightningModule):
                     # Update train L2 distances
                     if split == 'train':
                         self.train_dists.extend(individual_loss.detach().tolist())
+            elif self.model_type == 'addgraph':
+                loss, scores = self.margin_loss(x_, G) # |E|
             else:
                 scores = self.loss_func(G.x, x_, G.s, s_) # |V|
                     
@@ -503,19 +514,12 @@ class EdgeDetectionModel(pl.LightningModule):
             if self.model_type == 'ae-conad':
                 loss = self.eta * torch.mean(scores) + (1 - self.eta) * margin_loss
             else:
-                if self.model_type not in ['dynamic', 'deeptralog']:
+                if self.model_type not in ['dynamic', 'deeptralog', 'addgraph']:
                     loss = torch.mean(scores)
         else:
             loss, scores = self.margin_loss(x_, G) # |E|
             if self.model_type == 'dynamic' and self.multi_granularity:
-                x_graph = global_max_pool(x_, G.batch) # V X E -> B X E
-                # Handling average feature vector
-                targets = self.train_avg.expand(x_graph.shape[0], -1) # B X E
-                if self.on_cuda:
-                    targets = targets.cuda()
-                # Calculate loss and save to dict
-                individual_loss = self.mse_loss(x_graph, targets).sum(dim=-1) # B
-                avg_loss = individual_loss.sum() # float
+                individual_loss, avg_loss = self.global_objective(x_, G)
                 loss = loss + self.global_weight * avg_loss # B
 
             labels = G.y[:scores.shape[0]] # needed when some of the nodes are cut

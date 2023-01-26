@@ -118,6 +118,7 @@ if __name__ == '__main__':
                             'ae-scan', 
                             'ae-dynamic',
                             'deeptralog',
+                            'addgraph',
                             'dynamic',
                         ], 
                         help='graph convolutional model')
