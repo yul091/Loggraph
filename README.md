@@ -1,6 +1,6 @@
 # Log-anomaly-detection
 
-## Getting started
+<!-- ## Getting started
 
 To make it easy for you to get started with GitLab, here's a list of recommended next steps.
 
@@ -16,11 +16,11 @@ cd existing_repo
 git remote add origin https://nj-gitlab.nec-labs.com/CS/Exp/secnlp/log-anomaly-detection.git
 git branch -M master
 git push -uf origin master
-```
+``` -->
 
 ## Environment setup
 - python 3.7.13
-- pytorch 1.13.1
+- [pytorch 1.13.1](https://pytorch.org/get-started/locally/)
 - install pytorch geometric
 ```
 conda install pyg -c pyg
