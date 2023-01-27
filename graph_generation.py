@@ -130,7 +130,7 @@ if __name__ == '__main__':
     # Logistics
     parser.add_argument(
         '--common_dir', type=str, 
-        default='/nfs/intern_data/yufli/dataset', 
+        default='dataset', 
         help='Path to the common data dir where the processed dataframe is stored')
     parser.add_argument(
         '--root', '-r', type=str, 
@@ -231,13 +231,10 @@ if __name__ == '__main__':
         pred_df_path = os.path.join(common_dir, pred_df_name)
         common_df_path = os.path.join(common_dir, grouped_df_name)
 
-        
-        
         if os.path.exists(common_df_path) and use_cache:
             # Load grouped json dataset
             grouped_data = load_dataset('json', data_files={'train': common_df_path}, split='train')
             data_df = grouped_data.to_pandas()
-            
         else:
             # Generate predictions and save
             if os.path.exists(pred_df_path) and use_cache:
@@ -299,7 +296,6 @@ if __name__ == '__main__':
                     data_dict[group_id]
 
                 data_df = pd.DataFrame(data_dict.values())
-
                 # Add labels to each group
                 data_df['EventLabels'] = data_df['Label'].apply(lambda x: [0 if item=='-' else 1 for item in x])
                 data_df['Label'] = data_df['Label'].apply(lambda x: 0 if set(x) == set('-') else 1)
@@ -320,7 +316,6 @@ if __name__ == '__main__':
                     data_dict[group_id]
 
                 data_df = pd.DataFrame(data_dict.values())
-
                 # Add labels to each group
                 data_df['EventLabels'] = data_df['Label'].apply(lambda x: [0 if item=='0' else 1 for item in x])
                 data_df['Label'] = data_df['Label'].apply(lambda x: 0 if set(x) == set('0') else 1)
@@ -332,7 +327,6 @@ if __name__ == '__main__':
         df = get_train_test_data(data_df)
     else:
         df = pd.DataFrame([])
-
     
     # Ontology
     tag2id = {ent:i for i, ent in enumerate(LABEL2TEMPLATE.keys())}
