@@ -2,8 +2,8 @@
 DATANAME=BGL # AIT, BGL
 LABEL_TECH=seq2seq # seq2seq, regex
 INTERVAL=0.5min
-TRAIN_BATCH_SIZE=64
-EVAL_BATCH_SIZE=64
+TRAIN_BATCH_SIZE=32
+EVAL_BATCH_SIZE=32
 WEIGHT_DECAY=5e-7
 MAX_LENGTH=1024
 LAMBDA=0.1
@@ -14,16 +14,16 @@ LR=1e-3
 ROOT=dataset/${DATANAME}/${LABEL_TECH}-node-${INTERVAL}-template-bertembed
 
 ################################################ Dynamic Models ##################################################
-MODEL_TYPE=dynamic # ae-gcnae, ae-mlpae, ae-dominant, ae-conad, ae-anomalydae
-MODEL_PATH=bert-base-uncased # facebook/bart-base, gpt2, xlnet-base-cased, bert-base-uncased, bert-base-cased
-# CKPT=results/${DATANAME}/${LABEL_TECH}-${CLASSIFICATION}/${INTERVAL}/dynamic-${MODEL_PATH}
-CKPT=results/${DATANAME}/${LABEL_TECH}-${CLASSIFICATION}/${INTERVAL}/dynamic-${MODEL_PATH}-multi_granularity
+# MODEL_TYPE=dynamic # ae-gcnae, ae-mlpae, ae-dominant, ae-conad, ae-anomalydae
+# MODEL_PATH=bert-base-uncased # facebook/bart-base, gpt2, xlnet-base-cased, bert-base-uncased, bert-base-cased
+# # CKPT=results/${DATANAME}/${LABEL_TECH}-${CLASSIFICATION}/${INTERVAL}/dynamic-${MODEL_PATH}
+# CKPT=results/${DATANAME}/${LABEL_TECH}-${CLASSIFICATION}/${INTERVAL}/dynamic-${MODEL_PATH}-multi_granularity
 ##################################################################################################################
 
 ############################################### Baseline Models ##################################################
-# MODEL_TYPE=ae-conad # ae-gcnae, ae-mlpae, ae-dominant, ae-conad, ae-anomalydae, deeptralog, addgraph
-# MODEL_PATH=bert-base-uncased # facebook/bart-base gpt2, xlnet-base-cased
-# CKPT=results/${DATANAME}/${LABEL_TECH}-${CLASSIFICATION}/${INTERVAL}/${MODEL_TYPE} # gcn, mlp, etc.
+MODEL_TYPE=ae-conad # ae-gcnae, ae-mlpae, ae-dominant, ae-conad, ae-anomalydae, deeptralog, addgraph
+MODEL_PATH=bert-base-uncased # facebook/bart-base gpt2, xlnet-base-cased
+CKPT=results/${DATANAME}/${LABEL_TECH}-${CLASSIFICATION}/${INTERVAL}/${MODEL_TYPE} # gcn, mlp, etc.
 ##################################################################################################################
 
 

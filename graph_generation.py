@@ -81,7 +81,10 @@ def add_preds_to_df(struct_df, inference_type='seq2seq', language_model=None, to
 
 def splitbyinterval(df, interval='2min'):
     new_df = df.copy(deep=True)
-    new_df['Datetime'] = new_df['Timestamp'].apply(lambda x: datetime.fromtimestamp(x))
+    try:
+        new_df['Datetime'] = new_df['Timestamp'].apply(lambda x: datetime.fromtimestamp(x))
+    except:
+        new_df['Datetime'] = pd.to_datetime(new_df['Timestamp'])
     period = new_df.groupby(pd.Grouper(key='Datetime', freq=interval)).ngroup()
     new_df['Period'] = np.char.add('period_', (pd.factorize(period)[0]).astype(str))
     return new_df
