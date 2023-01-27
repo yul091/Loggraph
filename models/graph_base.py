@@ -122,16 +122,16 @@ class MLP(torch.nn.Module):
             self.norms.append(norm)
 
         self.reset_parameters()
-        # Define edge score function parameters
-        self.p_a = nn.Parameter(torch.DoubleTensor(self.out_channels), requires_grad=False)
-        self.p_b = nn.Parameter(torch.DoubleTensor(self.out_channels), requires_grad=False)
-        self.reset_aparameters()
+    #     # Define edge score function parameters
+    #     self.p_a = nn.Parameter(torch.DoubleTensor(self.out_channels), requires_grad=False)
+    #     self.p_b = nn.Parameter(torch.DoubleTensor(self.out_channels), requires_grad=False)
+    #     self.reset_aparameters()
     
-    def reset_aparameters(self):
-        p_a_ = self.p_a.unsqueeze(0)
-        nn.init.xavier_uniform_(p_a_.data, gain=1.414)
-        p_b_ = self.p_b.unsqueeze(0)
-        nn.init.xavier_uniform_(p_b_.data, gain=1.414)
+    # def reset_aparameters(self):
+    #     p_a_ = self.p_a.unsqueeze(0)
+    #     nn.init.xavier_uniform_(p_a_.data, gain=1.414)
+    #     p_b_ = self.p_b.unsqueeze(0)
+    #     nn.init.xavier_uniform_(p_b_.data, gain=1.414)
         
 
     @property
@@ -260,16 +260,16 @@ class GCN(torch.nn.Module):
                 in_channels = hidden_channels
             self.lin = Linear(in_channels, self.out_channels)
             
-        # Define edge score function parameters
-        self.p_a = nn.Parameter(torch.DoubleTensor(self.out_channels), requires_grad=False)
-        self.p_b = nn.Parameter(torch.DoubleTensor(self.out_channels), requires_grad=False)
-        self.reset_parameters()
+    #     # Define edge score function parameters
+    #     self.p_a = nn.Parameter(torch.DoubleTensor(self.out_channels), requires_grad=False)
+    #     self.p_b = nn.Parameter(torch.DoubleTensor(self.out_channels), requires_grad=False)
+    #     self.reset_parameters()
     
-    def reset_parameters(self):
-        p_a_ = self.p_a.unsqueeze(0)
-        nn.init.xavier_uniform_(p_a_.data, gain=1.414)
-        p_b_ = self.p_b.unsqueeze(0)
-        nn.init.xavier_uniform_(p_b_.data, gain=1.414)
+    # def reset_parameters(self):
+    #     p_a_ = self.p_a.unsqueeze(0)
+    #     nn.init.xavier_uniform_(p_a_.data, gain=1.414)
+    #     p_b_ = self.p_b.unsqueeze(0)
+    #     nn.init.xavier_uniform_(p_b_.data, gain=1.414)
 
     def init_conv(self, in_channels: int, out_channels: int,
                   **kwargs) -> MessagePassing:

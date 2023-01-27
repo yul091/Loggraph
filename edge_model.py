@@ -171,6 +171,17 @@ class EdgeDetectionModel(pl.LightningModule):
         else:
             raise NotImplementedError('Model type {} not implemented'.format(self.model_type))
         
+        if self.model_type in ['dynamic', 'addgraph']:
+            # Define edge score function parameters
+            self.p_a = nn.Parameter(torch.DoubleTensor(self.embed_dim), requires_grad=True)
+            self.p_b = nn.Parameter(torch.DoubleTensor(self.embed_dim), requires_grad=True)
+            self.reset_parameters()
+        else:
+            # Define edge score function parameters
+            self.p_a = nn.Parameter(torch.DoubleTensor(self.embed_dim), requires_grad=False)
+            self.p_b = nn.Parameter(torch.DoubleTensor(self.embed_dim), requires_grad=False)
+            self.reset_parameters()
+        
         # Logging
         print('Created {} module \n{} \nwith {:,} GPUs {:,} workers'.format(
             self.model.__class__.__name__, self.model, self.n_gpus, self.n_workers))
@@ -184,6 +195,12 @@ class EdgeDetectionModel(pl.LightningModule):
         self.train_dists = []
         self.train_avg = torch.normal(mean=0, std=1, size=(self.embed_dim,)) # E
         self.save_hyperparameters()
+        
+    def reset_parameters(self):
+        p_a_ = self.p_a.unsqueeze(0)
+        nn.init.xavier_uniform_(p_a_.data, gain=1.414)
+        p_b_ = self.p_b.unsqueeze(0)
+        nn.init.xavier_uniform_(p_b_.data, gain=1.414)
         
     @property
     def on_cuda(self):
@@ -209,14 +226,17 @@ class EdgeDetectionModel(pl.LightningModule):
         return batch.from_data_list(data_list)
 
     def score_func(self, hidden: Tensor, i: int, j: int, weight: float):
-        s = self.model.p_a * hidden[i] + self.model.p_b * hidden[j]
-        s = F.dropout(s, self.dropout, training=self.training)
-        s_ = torch.norm(s, 2).pow(2)
-        score = weight * torch.sigmoid(self.beta * s_ - self.mu)
+        if self.model_type in ['dynamic', 'addgraph']:
+            s = self.p_a * hidden[i] + self.p_b * hidden[j]
+            s = F.dropout(s, self.dropout, training=self.training)
+            s_ = torch.norm(s, 2).pow(2)
+            score = weight * torch.sigmoid(self.beta * s_ - self.mu)
+        else:
+            score = weight * torch.sigmoid(hidden[i] @ hidden[j] - self.mu)
         return score
     
     def loss_func(self, x, x_, s, s_):
-        if self.model_type in ['ae-dominant', 'ae-conad', 'ae-dynamic']:
+        if self.model_type in ['ae-dominant', 'ae-conad']:
             # attribute reconstruction loss
             diff_attribute = torch.pow(x - x_, 2)
             attribute_errors = torch.sqrt(torch.sum(diff_attribute, 1))
@@ -335,47 +355,58 @@ class EdgeDetectionModel(pl.LightningModule):
                 j_prime = torch.randint(s.size()[0], (1,)).item()
             return i, j_prime
 
-    def margin_loss(self, hidden: Tensor, G: Union[Data, Batch]):
-        # hidden: |V| X E, G: |V| in |G|
-        all_degrees = degree(G.edge_index[0], G.num_nodes)
+    def margin_loss(self, hidden: Tensor, G: Union[Data, Batch], split: str = 'train'):
         score = []
-        loss = 0
         all_nodes = 0
-        for k in range(G.num_graphs): 
-            graph = G[k]
-            # print('graph #{}: {}'.format(k, graph))
-            graph_feature = hidden[all_nodes:all_nodes+graph.num_nodes]
-            degrees = all_degrees[all_nodes:all_nodes+graph.num_nodes]
-            s = G.s[all_nodes:all_nodes+graph.num_nodes, all_nodes:all_nodes+graph.num_nodes]
-            all_nodes += graph.num_nodes
-            for i, j in graph.edge_index.T.tolist():
-                pos_score = self.score_func(graph_feature, i, j, s[i, j])
-                # Negative sampling
-                neg_score = float('-inf')
-                search_time = 0
-                while pos_score > neg_score and search_time < 10:
-                    i_prime, j_prime = self.neg_sampling(degrees, i, j, s)
-                    if (i_prime is not None) and (j_prime is not None):
-                        # Found effective negative edge
-                        neg_score = self.score_func(graph_feature, i_prime, j_prime, s[i, j])
-                    search_time += 1
-                
-                # print('i {}, j {}，pos score {}'.format(i, j, pos_score))
-                # print("i': {} j': {}, neg score: {}".format(i_prime, j_prime, neg_score))
-                if pos_score <= neg_score:
-                    edge_loss = F.relu(self.gamma + pos_score - neg_score)
-                    # print('edge_loss', edge_loss)
-                    loss += edge_loss
-                    score.append(edge_loss.detach().cpu())
+        
+        if split == 'train':
+            # hidden: |V| X E, G: |V| in |G|
+            all_degrees = degree(G.edge_index[0], G.num_nodes)
+            loss = 0
+            for k in range(G.num_graphs): 
+                graph: Data = G[k]
+                graph_feature = hidden[all_nodes:all_nodes+graph.num_nodes]
+                degrees = all_degrees[all_nodes:all_nodes+graph.num_nodes]
+                s = G.s[all_nodes:all_nodes+graph.num_nodes, all_nodes:all_nodes+graph.num_nodes]
+                all_nodes += graph.num_nodes
+                for i, j in graph.edge_index.T.tolist():
+                    pos_score = self.score_func(graph_feature, i, j, s[i, j])
+                    # Negative sampling
+                    neg_score = float('-inf')
+                    search_time = 0
+                    while pos_score > neg_score and search_time < 10:
+                        i_prime, j_prime = self.neg_sampling(degrees, i, j, s)
+                        if (i_prime is not None) and (j_prime is not None):
+                            # Found effective negative edge
+                            neg_score = self.score_func(graph_feature, i_prime, j_prime, s[i, j])
+                        search_time += 1
+                    
+                    if pos_score <= neg_score:
+                        edge_loss = F.relu(self.gamma + pos_score - neg_score)
+                        # print('edge_loss', edge_loss)
+                        loss += edge_loss
+                        score.append(pos_score.detach().cpu())
 
-        if not score:
-            score = torch.tensor([])
-            loss = torch.tensor(0.0, requires_grad=True)
+            if not score:
+                score = torch.tensor([])
+                loss = torch.tensor(0.0, requires_grad=True)
+                return loss, score
+            else:
+                score = torch.stack(score)
+                return loss/len(score), score
         else:
-            score = torch.stack(score)
-        # print('loss', loss)
-        return loss, score
-
+            for k in range(G.num_graphs): 
+                graph: Data = G[k]
+                graph_feature = hidden[all_nodes:all_nodes+graph.num_nodes]
+                s = G.s[all_nodes:all_nodes+graph.num_nodes, all_nodes:all_nodes+graph.num_nodes]
+                all_nodes += graph.num_nodes
+                for i, j in graph.edge_index.T.tolist():
+                    edge_score = self.score_func(graph_feature, i, j, s[i, j])
+                    score.append(edge_score.detach().cpu())
+                   
+            score = torch.stack(score) 
+            return score.mean(), score
+                        
 
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
@@ -396,7 +427,7 @@ class EdgeDetectionModel(pl.LightningModule):
             targets = targets.cuda()
         # Calculate loss and save to dict
         individual_loss = self.mse_loss(x_graph, targets).sum(dim=-1) # B
-        avg_loss = individual_loss.sum() # float
+        avg_loss = individual_loss.mean() # float
         return individual_loss, avg_loss
 
     def training_step(self, batch: Union[Data, Batch], batch_idx: int, split: str = 'train'): 
@@ -447,8 +478,6 @@ class EdgeDetectionModel(pl.LightningModule):
             x_ = self.model(
                 x=G.x,
             )
-        elif self.model_type.lower() == 'ae-scan':
-            scores = self.model(G)
         elif self.model_type in ['deeptralog', 'addgraph']:
             x_ = self.forward(
                 G = G,
@@ -468,17 +497,17 @@ class EdgeDetectionModel(pl.LightningModule):
         
         # Calculate loss and save to dict
         if split == 'train' or split == 'val':
-            if self.model_type in ['ae-gcnae', 'ae-mlpae', 'ae-scan', 'deeptralog']:
-                if self.model_type != 'ae-scan':
-                    scores = torch.mean(F.mse_loss(x_, G.x, reduction='none'), dim=1) # |V|
+            if self.model_type in ['ae-gcnae', 'ae-mlpae', 'deeptralog']:
+                scores = torch.mean(F.mse_loss(x_, G.x, reduction='none'), dim=1) # |V|
                 if self.model_type == 'deeptralog':
                     individual_loss, loss = self.global_objective(x_, G)
                     # Update train L2 distances
                     if split == 'train':
                         self.train_dists.extend(individual_loss.detach().tolist())
-                
+                else:
+                    loss = torch.mean(scores)
             elif self.model_type in 'dynamic':
-                loss, scores = self.margin_loss(x_, G) # |E|
+                loss, scores = self.margin_loss(x_, G, split=split) # |E|
                 if self.multi_granularity:
                     individual_loss, avg_loss = self.global_objective(x_, G)
                     loss = loss + self.global_weight * avg_loss # B
@@ -486,22 +515,21 @@ class EdgeDetectionModel(pl.LightningModule):
                     if split == 'train':
                         self.train_dists.extend(individual_loss.detach().tolist())
             elif self.model_type == 'addgraph':
-                loss, scores = self.margin_loss(x_, G) # |E|
-            else:
+                loss, scores = self.margin_loss(x_, G, split=split) # |E|
+            else: # ae-conad, ae-dominant, ae-anomalydae
                 scores = self.loss_func(G.x, x_, G.s, s_) # |V|
+                if self.model_type == 'ae-conad':
+                    loss = self.eta * torch.mean(scores) + (1 - self.eta) * margin_loss
+                else:
+                    loss = torch.mean(scores)
                     
             # Store training score distribution for analysis
             if split == 'train':
+                if self.model_type not in ['dynamic', 'addgraph']:
+                    _, scores = self.margin_loss(x_, G, split='val') # |E|
                 self.decision_scores.extend(scores.detach().cpu().tolist())
-            
-            # Handling loss
-            if self.model_type == 'ae-conad':
-                loss = self.eta * torch.mean(scores) + (1 - self.eta) * margin_loss
-            else:
-                if self.model_type not in ['dynamic', 'deeptralog', 'addgraph']:
-                    loss = torch.mean(scores)
         else:
-            loss, scores = self.margin_loss(x_, G) # |E|
+            loss, scores = self.margin_loss(x_, G, split=split) # |E|
             if self.model_type == 'dynamic' and self.multi_granularity:
                 individual_loss, avg_loss = self.global_objective(x_, G)
                 loss = loss + self.global_weight * avg_loss # B
