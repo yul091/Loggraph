@@ -7,3 +7,4 @@ pytorch-lightning
 matplotlib
 tqdm==4.64.1
 sacrebleu
+line_profiler

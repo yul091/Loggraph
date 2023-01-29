@@ -413,6 +413,9 @@ class EdgeDetectionModel(pl.LightningModule):
                     # edge_score = self.score_func(graph_feature, i, j, s[i, j])
                     # score.append(edge_score.detach().cpu())
                 
+                rows = torch.tensor(rows, dtype=torch.long, device=hidden.device)
+                cols = torch.tensor(cols, dtype=torch.long, device=hidden.device)
+                weights = torch.tensor(weights, dtype=torch.float, device=hidden.device)
                 pos_scores = self.score_func(graph_feature, rows, cols, weights)
                 score.extend(pos_scores.detach().cpu().tolist())
                 
