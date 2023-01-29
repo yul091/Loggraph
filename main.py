@@ -16,7 +16,7 @@ from graph_model import GraphConv
 from node_model import NodeConv, AENodeConv
 from edge_model import EdgeDetectionModel
 from utils import LABEL2TEMPLATE, EMBED_SIZE
-from graph_dataset import HDFSDataset, BGLDataset, BGLNodeDataset
+from graph_dataset import HDFSDataset, BGLDataset, BGLNodeDataset, SockShopNodeDataset
 from torch_geometric.loader import DataLoader
 
 
@@ -212,6 +212,10 @@ if __name__ == '__main__':
             graph_data = BGLDataset(root, hparams=hparams)
         else:
             graph_data = BGLNodeDataset(root, hparams=hparams)
+            
+    elif 'sockshop' in root:
+        graph_data = SockShopNodeDataset(root, hparams=hparams)
+        print(graph_data.graph_stats)
     else:
         raise ValueError()
 
@@ -360,19 +364,16 @@ if __name__ == '__main__':
     ##############################################################################
     #                                  TRAINING                                  #
     ##############################################################################
-
-    if 'HDFS' in root:
+    
+    if classification =='graph':
         model = GraphConv(hparams)
-    elif 'BGL' in root or 'AIT' in root:
-        if classification =='graph':
-            model = GraphConv(hparams)
-        elif classification == 'node':
-            if args.model_type.startswith('ae'):
-                model = AENodeConv(hparams)
-            else:
-                model = NodeConv(hparams)
-        else: # edge
-            model = EdgeDetectionModel(hparams)
+    elif classification == 'node':
+        if args.model_type.startswith('ae'):
+            model = AENodeConv(hparams)
+        else:
+            model = NodeConv(hparams)
+    else: # edge
+        model = EdgeDetectionModel(hparams)
 
     print('View tensorboard logs by running\ntensorboard --logdir {} and going to http://localhost:6006 on your browser'.format(checkpoint_dir))
 

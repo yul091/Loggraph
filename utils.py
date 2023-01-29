@@ -70,6 +70,17 @@ REGEX_PATTERN['url'] = r'(https?://\S+)'
 REGEX_PATTERN['time'] = r'(([0-1]?\d|2[0-3]):([0-5]?\d):([0-5]?\d))'
 
 
+SOCK_SHOP_ENT = {
+    'customer': r'r?"customer"[:|-|=|\s/]*{\w+}',
+    'address': r'r?"address"[:|-|=|\s/]*<(\w+)>',
+    'cards': r'r?"card"[:|-|=|\s/]*<(\w+)>',
+    'items': r'r?"items"[:|-|=|\s/]*<(\w+)>',
+    'quantity': r'r?"quantity"[:|-|=|\s/]*<(\w+)>',
+    'unitPrice': r'r?"unitPrice"[:|-|=|\s/]*<(\w+)>',
+    'itemId': r'r?"itemId"[:|-|=|\s/]*<(\w+)>',  
+    'date': r'r?"date"[:|-|=|\s/]*<(\w+)>',
+    "href": r'r?"href"[:|-|=|\s/]*<(\w+)>',
+}
 
 def set_seed(seed: int):
     """

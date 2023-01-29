@@ -12,7 +12,7 @@ from collections import defaultdict
 from typing import List
 from utils import LABEL2TEMPLATE, SentenceEncoder
 import torch
-from torch_geometric.data import Data, Batch, Dataset
+from torch_geometric.data import Data, Dataset
 from transformers import (
     # AutoTokenizer,
     # AutoModel,
@@ -45,7 +45,16 @@ class HDFSDataset(Dataset):
         #     print("Uing event ID (e.g., a4bd6#2o) as event embedding inputs !!!")
         super().__init__(root, transform, pre_transform, pre_filter)
         # Get statistics of the datasets
-        self.graph_stats = load_dataset('json', data_files=self.raw_paths[0])['train']
+        # try:
+        #     self.graph_stats = load_dataset('json', data_files=self.raw_paths[0])['train']
+        # except:
+        graph_stats = []
+        f = open(self.raw_paths[0], 'r')
+        for line in f:
+            # print("line ({}): {}".format(type(line), line))
+            graph_stats.append(json.loads(line))
+        self.graph_stats = pd.DataFrame(graph_stats)
+            
         if not hasattr(self, 'node_set'):
             f = open(os.path.join(self.root, 'others', 'node.pickle'), 'rb')
             self.node_set = pickle.load(f)
@@ -541,6 +550,175 @@ class BGLNodeDataset(HDFSDataset):
 
                 torch.save(data, osp.join(self.processed_dir, f'graph_{idx}.pt'))
                 idx += 1
+
+    def len(self):
+        return len(self.processed_file_names)
+
+    def get(self, idx):
+        data = torch.load(osp.join(self.processed_dir, f'graph_{idx}.pt'))
+        return data
+    
+    
+    
+class SockShopNodeDataset(HDFSDataset):
+    def __init__(self, root, transform=None, pre_transform=None, pre_filter=None, hparams=None):
+        super().__init__(root, transform, pre_transform, pre_filter, hparams)
+        
+    def _visualize(self, idx, directed=False, out_dir=None,name=None):
+        graph_dict=self.graph_stats[idx] # dict: graphID, nodes, label
+        ent2tag = {node[1]:node[0] for node in graph_dict['nodes']}
+        ent2id = {ent:i for i, ent in enumerate(ent2tag.keys())}
+        
+        # Define graph
+        net = Network('1000px', '2000px', directed=directed)
+        for node_pair, y in zip(graph_dict['nodes'], graph_dict['label']):
+
+            # Add first node
+            shape1 = self.shape_dict.get(node_pair[0], self.shape_dict['others'])
+            if node_pair[0] == 'event' and y == 1:
+                net.add_node(ent2id[node_pair[1]], label=node_pair[1], color='red', shape=shape1)
+            else:
+                net.add_node(ent2id[node_pair[1]], label=node_pair[1], shape=shape1)
+
+            # Add second node
+            shape2 = self.shape_dict.get(node_pair[2], self.shape_dict['others'])
+            if node_pair[2] == 'event' and y == 1:
+                net.add_node(ent2id[node_pair[3]], label=node_pair[3], color='red', shape=shape2)
+            else:
+                net.add_node(ent2id[node_pair[3]], label=node_pair[3], shape=shape2)
+
+            # Add edges
+            net.add_edge(ent2id[node_pair[1]], ent2id[node_pair[3]])
+
+        if out_dir is not None:
+            graph_dir = out_dir
+        else:
+            graph_dir = os.path.join(self.root, 'graph')
+        if not os.path.isdir(graph_dir):
+            os.makedirs(graph_dir)
+
+        # Save graph_idx.html
+        if name is None:
+            label = 'anomaly' if sum(graph_dict['label']) > 0 else 'normal'
+            net.show(os.path.join(graph_dir, f'graph_{idx}({label}).html'))
+        else:
+            net.show(os.path.join(graph_dir, name))
+
+
+    def download(self):
+        # Download to `self.raw_dir`.
+        graph_list = []
+        self.node_set = set()
+
+        for idx, row in tqdm(self.df.iterrows()):
+            graph_dict = {'graphID': idx, 'nodes': [], 'label': []}
+            graph_node_set = set()
+            for j in range(len(row.EventLabels)):
+                node_list = []
+                # Connect source to Timestamp
+                node_list += [('timestamp', str(row.Timestamp[j]), 'source', row.source[j]), ('source', row.source[j], 'timestamp', str(row.Timestamp[j]))]
+                self.node_set.add(row.source[j]) # add source node
+                self.node_set.add(row.Timestamp[j]) # add timestamp node
+                
+                # Connect customer entity to other entities
+                user = None
+                all_others = []
+                for (key, value) in row.Preds[j]:
+                    if key == 'customer':
+                        user = value
+                    else:
+                        all_others.append((key, value))
+                        
+                if user:
+                    graph_node_set.add(user) # add customer node
+                    for (key, value) in all_others:
+                        node_list += [('customer', user, key, value), (key, value, 'customer', user)]
+                        graph_node_set.add(value) # add entity node
+
+                graph_dict['nodes'] += node_list
+                graph_dict['label'] += [row.EventLabels[j]]*len(node_list) # broadcast to all node pairs for each log
+            
+            # Integrate all graphs
+            self.node_set.update(graph_node_set) # merge all nodes into node set
+            graph_list.append(graph_dict)
+
+        with open(os.path.join(self.raw_dir, 'graph.json'), 'w') as file:
+            for dic in graph_list:
+                json.dump(dic, file) 
+                file.write("\n")
+
+        # Save node set for reuse
+        node_dir = os.path.join(self.root, 'others')
+        if not os.path.exists(node_dir):
+            os.makedirs(node_dir)
+        
+        f = open(os.path.join(node_dir, 'node.pickle'), 'wb')
+        pickle.dump(self.node_set, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+    def _get_graph_data(self, graph_dict: dict):
+        # Get {ent: tag} dict
+        ent_tag_dict = {x[1]:x[0] for x in graph_dict['nodes']} # {entity: tag}
+
+        # Get edge index: 2 X |E|
+        ent2id = {ent:i for i,ent in enumerate(ent_tag_dict.keys())} # node index
+        edge_index = [[ent2id[x[1]], ent2id[x[3]]] for x in graph_dict['nodes']] 
+        edge_index = torch.tensor(edge_index, dtype=torch.long).T 
+
+        # Get feature vectors (sentence embedding): |V| X F
+        graph_prompts = []
+        ids = []
+        for ent, tag in ent_tag_dict.items():
+            # tag_embed = F.one_hot(torch.tensor(self.tag2id[tag]), num_classes=len(self.tag2id)).float() # num_tags 
+            ids.append(self.node2id[ent]) # assign each node a unique id
+            #########################################################
+            # Generate template
+            if tag in LABEL2TEMPLATE:
+                prompt = str(ent) + LABEL2TEMPLATE[tag][0]
+            else:
+                prompt = str(ent) + ' is a {} entity .'.format(tag)
+            #########################################################
+            graph_prompts.append(prompt)
+
+        feature = self._tokenize_and_embed(graph_prompts)
+
+        # Handle label (event special)
+        ent2label = defaultdict(int)
+        for node, label in zip(graph_dict['nodes'], graph_dict['label']):
+            ent2label[node[1]] += label
+            ent2label[node[1]] = min(1, ent2label[node[1]])
+        
+        label = torch.LongTensor(list(ent2label.values()))
+        ids = torch.LongTensor(ids)
+        edge_label = torch.LongTensor(graph_dict['label']) 
+        return Data(x=feature, edge_index=edge_index, y=edge_label, ids=ids, node_label=label)
+
+    def process(self):
+        idx = 0
+        if not hasattr(self, 'node_set'):
+            f = open(os.path.join(self.root, 'others', 'node.pickle'), 'rb')
+            self.node_set = pickle.load(f)
+
+        node_list = list(self.node_set)
+        self.node2id = {x: i for i, x in enumerate(node_list)}
+        
+        for raw_path in self.raw_paths:
+            # Read data from `raw_path`.
+            f = open(raw_path, 'r')
+            for line in f:
+                # print("line ({}): {}".format(type(line), line))
+                graph_dict = json.loads(line)
+                data = self._get_graph_data(graph_dict)
+
+                if self.pre_filter is not None and not self.pre_filter(data):
+                    continue
+
+                if self.pre_transform is not None:
+                    data = self.pre_transform(data)
+
+                torch.save(data, osp.join(self.processed_dir, f'graph_{idx}.pt'))
+                idx += 1
+            
 
     def len(self):
         return len(self.processed_file_names)

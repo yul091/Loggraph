@@ -247,8 +247,6 @@ if __name__ == '__main__':
     parser.add_argument(
         '--overwrite_cache', action='store_true', default=False,
         help="overwrite the cached training and evaluation sets")
-    
-
     args = parser.parse_args()
 
     # Arguments

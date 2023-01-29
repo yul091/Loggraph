@@ -2,6 +2,7 @@ import sys
 sys.dont_write_bytecode = True
 import re
 import os
+import json
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
@@ -11,12 +12,76 @@ from sklearn.model_selection import train_test_split
 from utils import (
     TOKENIZE_PATTERN, 
     REGEX_PATTERN, 
-    LABEL2TEMPLATE, 
+    LABEL2TEMPLATE,
+    SOCK_SHOP_ENT, 
 )
 from NER import prediction, get_entities_bio
 from argparse import Namespace
-from graph_dataset import HDFSDataset, BGLDataset, BGLNodeDataset
+from graph_dataset import HDFSDataset, BGLDataset, BGLNodeDataset, SockShopNodeDataset
 from datasets import load_from_disk, load_dataset, Dataset
+
+
+def handle_string(string: str):
+    # Extract the JSON part of the string using regular expressions
+    json_string = re.search('{.*}', str(string))
+    if json_string:
+        json_string = json_string.group()
+
+    # Load the JSON string as a Python dictionary
+    try:
+        data = json.loads(json_string)
+    except:
+        data = {}
+
+    def extract_pairs(data: dict, pairs: list):
+        """Recursively extract key-value pairs from a nested dictionary"""
+        for key, value in data.items():
+            if isinstance(value, list):
+                for item in value:
+                    extract_pairs(item, pairs)
+            elif isinstance(value, dict):
+                if key in SOCK_SHOP_ENT:
+                    pairs.append((key, json.dumps(value)))
+                extract_pairs(value, pairs)
+            else:
+                if key in SOCK_SHOP_ENT and value:
+                    pairs.append((key, value))
+        return pairs
+
+    # Extract all key-value pairs
+    pairs = extract_pairs(data, [])
+    
+    user = None
+    all_others = []
+    for key, value in pairs:
+        if key == 'customer':
+            user = value
+        elif key in SOCK_SHOP_ENT:
+            all_others.append(value)
+            
+    if user: 
+        if len(all_others) >= 13:
+            label = 1
+        else:
+            label = 0
+    else:
+        label = 0
+    
+    return pairs, label
+
+
+def add_sock_shop_preds_to_df(struct_df: pd.DataFrame):
+    preds, labels = [], []
+    print("Start matching!!! Total number of logs: {}".format(struct_df.shape[0]))
+    
+    for idx, instance in tqdm(struct_df.iterrows()):
+        log = instance['Content']
+        pairs, label = handle_string(log)
+        preds.append(pairs)
+        labels.append(label)
+        
+    struct_df['Preds'] = preds
+    struct_df['Label'] = labels
 
 
 def add_preds_to_df(struct_df, inference_type='seq2seq', language_model=None, tokenizer=None, strategy=0):
@@ -94,12 +159,15 @@ def splitbyinterval(df, interval='2min'):
 def get_train_test_data(data_df):
     # Split train and test data
     print("Splitting graph datasets!!!")
+    print(data_df[['Preds', 'EventLabels', 'Label']])
     num_total = data_df.shape[0]
     normal_samples = data_df[data_df.Label == 0]
     anomaly_samples = data_df[data_df.Label == 1]
     num_normal = normal_samples.shape[0]
     num_anomaly = anomaly_samples.shape[0]
     anomaly_rate = num_anomaly/num_total if num_total else 0
+    
+    print('normal graphs: {}, anomaly graphs: {}'.format(num_normal, num_anomaly))
 
     train_df, test_normal_df = train_test_split(normal_samples, test_size=0.2, random_state=seed)
     train_df, val_df = train_test_split(train_df, test_size=0.2, random_state=seed)
@@ -226,6 +294,9 @@ if __name__ == '__main__':
             else:
                 pred_df_name = f'AIT_pred_regex.json'
                 grouped_df_name = f'AIT_grouped_regex_{interval}.json'
+        elif 'sockshop' in log_file:
+            pred_df_name = f'sockshop_pred_regex.json'
+            grouped_df_name = f'sockshop_grouped_regex_{interval}.json'
         else:
             raise ValueError("logfile dataset type not supported! Must be HDFS or BGL!")
 
@@ -234,98 +305,122 @@ if __name__ == '__main__':
         pred_df_path = os.path.join(common_dir, pred_df_name)
         common_df_path = os.path.join(common_dir, grouped_df_name)
 
-        if os.path.exists(common_df_path) and use_cache:
-            # Load grouped json dataset
-            grouped_data = load_dataset('json', data_files={'train': common_df_path}, split='train')
-            data_df = grouped_data.to_pandas()
+        # if os.path.exists(common_df_path) and use_cache:
+        #     # Load grouped json dataset
+        #     grouped_data = load_dataset('json', data_files={'train': common_df_path}, split='train')
+        #     data_df = grouped_data.to_pandas()
+        # else:
+        # # Generate predictions and save
+        # if os.path.exists(pred_df_path) and use_cache:
+        #     struct_data = load_dataset('json', data_files={'train': pred_df_path}, split='train')
+        #     struct_df = struct_data.to_pandas()
+        # else:
+        print("Generating predictions !!!")
+        if 'BGL' in log_file or 'HDFS' in log_file:
+            struct_df = pd.read_csv(log_file, na_filter=False, memory_map=True)
+            add_preds_to_df(struct_df, inference_type, model, tokenizer, strategy)
+        elif 'sockshop' in log_file:
+            struct_df = pd.read_csv(log_file, na_filter=False, memory_map=True)
+            struct_df.drop(columns=['Unnamed: 0'], inplace=True)
+            struct_df.rename(columns={'log': 'Content', '@timestamp': 'Timestamp'}, inplace=True)
+            add_sock_shop_preds_to_df(struct_df)
         else:
-            # Generate predictions and save
-            if os.path.exists(pred_df_path) and use_cache:
-                struct_data = load_dataset('json', data_files={'train': pred_df_path}, split='train')
-                struct_df = struct_data.to_pandas()
-            else:
-                print("Generating predictions !!!")
-                if 'BGL' in log_file or 'HDFS' in log_file:
-                    struct_df = pd.read_csv(log_file, na_filter=False, memory_map=True)
-                else:
-                    # AIT dataset
-                    struct_df = load_from_disk(log_file).to_pandas()
-                    struct_df.Label = struct_df.Label.apply(lambda x: '0' if set(x) == set('0') else '1')
+            # AIT dataset
+            struct_df = load_from_disk(log_file).to_pandas()
+            struct_df.Label = struct_df.Label.apply(lambda x: '0' if set(x) == set('0') else '1')
+            add_preds_to_df(struct_df, inference_type, model, tokenizer, strategy)
 
-                add_preds_to_df(struct_df, inference_type, model, tokenizer, strategy)
-                # Save pred_df for reusage
-                struct_data = Dataset.from_pandas(struct_df)
-                struct_data.to_json(pred_df_path)
+        # # Save pred_df for reusage
+        # struct_data = Dataset.from_pandas(struct_df)
+        # struct_data.to_json(pred_df_path)
 
 
-            # Grouped by Time interval (or BlockId for HDFS)
-            if 'HDFS' in log_file:
-                # Get blockId and corresponding logs
-                print("Preparing HDFS dataset ...")
-                struct_df['Datetime'] = struct_df['Time'].apply(lambda x: datetime.fromtimestamp(x))
-                print("Getting BlockIDs and Logs!!! Total number of logs: {}".format(struct_df.shape[0]))
-                data_dict = OrderedDict()
-                for idx, row in tqdm(struct_df.iterrows()):
-                    blkId_list = re.findall(r'(blk_-?\d+)', row['Content'])
-                    blkId_set = set(blkId_list)
-                    for blk_Id in blkId_set:
-                        if not blk_Id in data_dict:
-                            data_dict[blk_Id] = defaultdict(list)
-                            data_dict[blk_Id]['BlockId'] = blk_Id
-                        for col in struct_df.columns:
-                            data_dict[blk_Id][col].append(row[col])
+        # Grouped by Time interval (or BlockId for HDFS)
+        if 'HDFS' in log_file:
+            # Get blockId and corresponding logs
+            print("Preparing HDFS dataset ...")
+            struct_df['Datetime'] = struct_df['Time'].apply(lambda x: datetime.fromtimestamp(x))
+            print("Getting BlockIDs and Logs!!! Total number of logs: {}".format(struct_df.shape[0]))
+            data_dict = OrderedDict()
+            for idx, row in tqdm(struct_df.iterrows()):
+                blkId_list = re.findall(r'(blk_-?\d+)', row['Content'])
+                blkId_set = set(blkId_list)
+                for blk_Id in blkId_set:
+                    if not blk_Id in data_dict:
+                        data_dict[blk_Id] = defaultdict(list)
+                        data_dict[blk_Id]['BlockId'] = blk_Id
+                    for col in struct_df.columns:
+                        data_dict[blk_Id][col].append(row[col])
 
-                data_df = pd.DataFrame(data_dict.values())
+            data_df = pd.DataFrame(data_dict.values())
+            # Add labels to each block 
+            label_data = pd.read_csv(label_file, engine='c', na_filter=False, memory_map=True)
+            label_data = label_data.set_index('BlockId')
+            label_dict = label_data['Label'].to_dict()
+            data_df['Label'] = data_df['BlockId'].apply(lambda x: 1 if label_dict[x] == 'Anomaly' else 0)
 
-                # Add labels to each block 
-                label_data = pd.read_csv(label_file, engine='c', na_filter=False, memory_map=True)
-                label_data = label_data.set_index('BlockId')
-                label_dict = label_data['Label'].to_dict()
-                data_df['Label'] = data_df['BlockId'].apply(lambda x: 1 if label_dict[x] == 'Anomaly' else 0)
+        elif 'BGL' in log_file:
+            # Split by time interval
+            print("Preparing for BGL dataset ...")
+            print("Split by interval {}!!! Total number of logs: {}".format(interval, struct_df.shape[0]))
+            grouped_df = splitbyinterval(struct_df, interval)
+            data_dict = OrderedDict()
+            for idx, row in tqdm(grouped_df.iterrows()):
+                group_id = row['Period']
+                if group_id not in data_dict:
+                    data_dict[group_id] = defaultdict(list)
 
-            elif 'BGL' in log_file:
-                # Split by time interval
-                print("Preparing for BGL dataset ...")
-                print("Split by interval {}!!! Total number of logs: {}".format(interval, struct_df.shape[0]))
-                grouped_df = splitbyinterval(struct_df, interval)
-                data_dict = OrderedDict()
-                for idx, row in tqdm(grouped_df.iterrows()):
-                    group_id = row['Period']
-                    if group_id not in data_dict:
-                        data_dict[group_id] = defaultdict(list)
+                for col in grouped_df.columns:
+                    data_dict[group_id][col].append(row[col])
+                data_dict[group_id]
 
-                    for col in grouped_df.columns:
-                        data_dict[group_id][col].append(row[col])
-                    data_dict[group_id]
+            data_df = pd.DataFrame(data_dict.values())
+            # Add labels to each group
+            data_df['EventLabels'] = data_df['Label'].apply(lambda x: [0 if item=='-' else 1 for item in x])
+            data_df['Label'] = data_df['Label'].apply(lambda x: 0 if set(x) == set('-') else 1)
+            
+        elif 'sockshop' in log_file:
+            print("Preparing for sockshop dataset ...")
+            print("Split by interval {}!!! Total number of logs: {}".format(interval, struct_df.shape[0]))
+            grouped_df = splitbyinterval(struct_df, interval)
+            data_dict = OrderedDict()
+            for idx, row in tqdm(grouped_df.iterrows()):
+                group_id = row['Period']
+                if group_id not in data_dict:
+                    data_dict[group_id] = defaultdict(list)
 
-                data_df = pd.DataFrame(data_dict.values())
-                # Add labels to each group
-                data_df['EventLabels'] = data_df['Label'].apply(lambda x: [0 if item=='-' else 1 for item in x])
-                data_df['Label'] = data_df['Label'].apply(lambda x: 0 if set(x) == set('-') else 1)
+                for col in grouped_df.columns:
+                    data_dict[group_id][col].append(row[col])
+                data_dict[group_id]
 
-            else:
-                # Split by time interval
-                print("Preparing for AIT dataset ...")
-                print("Split by interval {}!!! Total number of logs: {}".format(interval, struct_df.shape[0]))
-                grouped_df = splitbyinterval(struct_df, interval)
-                data_dict = OrderedDict()
-                for idx, row in tqdm(grouped_df.iterrows()):
-                    group_id = row['Period']
-                    if group_id not in data_dict:
-                        data_dict[group_id] = defaultdict(list)
+            data_df = pd.DataFrame(data_dict.values())
+            # Add labels to each group
+            data_df['EventLabels'] = data_df['Label'].copy()
+            data_df['Label'] = data_df['Label'].apply(lambda x: 0 if set(x) == set([0]) else 1)
 
-                    for col in grouped_df.columns:
-                        data_dict[group_id][col].append(row[col])
-                    data_dict[group_id]
+        else:
+            # Split by time interval
+            print("Preparing for AIT dataset ...")
+            print("Split by interval {}!!! Total number of logs: {}".format(interval, struct_df.shape[0]))
+            grouped_df = splitbyinterval(struct_df, interval)
+            data_dict = OrderedDict()
+            for idx, row in tqdm(grouped_df.iterrows()):
+                group_id = row['Period']
+                if group_id not in data_dict:
+                    data_dict[group_id] = defaultdict(list)
 
-                data_df = pd.DataFrame(data_dict.values())
-                # Add labels to each group
-                data_df['EventLabels'] = data_df['Label'].apply(lambda x: [0 if item=='0' else 1 for item in x])
-                data_df['Label'] = data_df['Label'].apply(lambda x: 0 if set(x) == set('0') else 1)
+                for col in grouped_df.columns:
+                    data_dict[group_id][col].append(row[col])
+                data_dict[group_id]
 
-            # Save to common path for reuse
-            grouped_data = Dataset.from_pandas(data_df)
-            grouped_data.to_json(common_df_path)
+            data_df = pd.DataFrame(data_dict.values())
+            # Add labels to each group
+            data_df['EventLabels'] = data_df['Label'].apply(lambda x: [0 if item=='0' else 1 for item in x])
+            data_df['Label'] = data_df['Label'].apply(lambda x: 0 if set(x) == set('0') else 1)
+
+            # # Save to common path for reuse
+            # grouped_data = Dataset.from_pandas(data_df)
+            # grouped_data.to_json(common_df_path)
 
         df = get_train_test_data(data_df)
     else:
@@ -355,6 +450,9 @@ if __name__ == '__main__':
         else:
             print("Generating BGL torch_geometric.data.Dataset (node labeling)!!!")
             graph_data = BGLNodeDataset(root, hparams=hparams)
+    elif 'sockshop' in log_file:
+        print("Generating Sock Shop torch_geometric.data.Dataset (node labeling)!!!")
+        graph_data = SockShopNodeDataset(root, hparams=hparams)
     else:
         # AIT dataset
         if label_type == 'graph':
