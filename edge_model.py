@@ -1,4 +1,5 @@
 import os
+import random
 import numpy as np
 import pandas as pd
 from copy import deepcopy
@@ -38,6 +39,11 @@ from models.SCAN import SCAN
 from models.Dynamic_edge import DynamicEdge
 from models.DeepTraLog import DeepTraLog_Base
 from models.AddGraph import AddGraph_Base
+
+import line_profiler
+import atexit
+profile = line_profiler.LineProfiler()
+atexit.register(profile.print_stats)
 
 
 class EdgeDetectionModel(pl.LightningModule):
@@ -176,11 +182,6 @@ class EdgeDetectionModel(pl.LightningModule):
             self.p_a = nn.Parameter(torch.DoubleTensor(self.embed_dim), requires_grad=True)
             self.p_b = nn.Parameter(torch.DoubleTensor(self.embed_dim), requires_grad=True)
             self.reset_parameters()
-        else:
-            # Define edge score function parameters
-            self.p_a = nn.Parameter(torch.DoubleTensor(self.embed_dim), requires_grad=False)
-            self.p_b = nn.Parameter(torch.DoubleTensor(self.embed_dim), requires_grad=False)
-            self.reset_parameters()
         
         # Logging
         print('Created {} module \n{} \nwith {:,} GPUs {:,} workers'.format(
@@ -224,16 +225,6 @@ class EdgeDetectionModel(pl.LightningModule):
                 data_list.append(data)
 
         return batch.from_data_list(data_list)
-
-    def score_func(self, hidden: Tensor, i: int, j: int, weight: float):
-        if self.model_type in ['dynamic', 'addgraph']:
-            s = self.p_a * hidden[i] + self.p_b * hidden[j]
-            s = F.dropout(s, self.dropout, training=self.training)
-            s_ = torch.norm(s, 2).pow(2)
-            score = weight * torch.sigmoid(self.beta * s_ - self.mu)
-        else:
-            score = weight * torch.sigmoid(hidden[i] @ hidden[j] - self.mu)
-        return score
     
     def loss_func(self, x, x_, s, s_):
         if self.model_type in ['ae-dominant', 'ae-conad']:
@@ -267,37 +258,14 @@ class EdgeDetectionModel(pl.LightningModule):
         else:
             raise TypeError(f"Unsupported model type {self.model_type}")
         
-        
     def _data_augmentation(self, x: Tensor, adj: Adj):
-        """
-        Data augmentation on the input graph. Four types of
-        pseudo anomalies will be injected:
-            Attribute, deviated
-            Attribute, disproportionate
-            Structure, high-degree
-            Structure, outlying
-        
-        Parameters
-        -----------
-        x : note attribute matrix
-        adj : dense adjacency matrix
-
-        Returns
-        -------
-        feat_aug, adj_aug, label_aug : augmented
-            attribute matrix, adjacency matrix, and
-            pseudo anomaly label to train contrastive
-            graph representations
-        """
         rate = self.r
         num_added_edge = self.m
         surround = self.k
         scale_factor = self.f
-
         adj_aug, feat_aug = deepcopy(adj), deepcopy(x)
         num_nodes = adj_aug.shape[0]
         label_aug = torch.zeros(num_nodes, dtype=torch.int32)
-
         prob = torch.rand(num_nodes)
         label_aug[prob < rate] = 1
 
@@ -330,36 +298,34 @@ class EdgeDetectionModel(pl.LightningModule):
         edge_index_aug = dense_to_sparse(adj_aug)[0].to(self.device)
         feat_aug = feat_aug.to(self.device)
         label_aug = label_aug.to(self.device)
-        
         return feat_aug, edge_index_aug, label_aug
-
-    def neg_sampling(self, degrees: Tensor, i: int, j: int, s: Adj):
-        if degrees.size()[0] == 2: 
-            return None, None # no negative edge exists!
-        # negative sampling
-        prob_i = degrees[i]/(degrees[i] + degrees[j]) if degrees[i] + degrees[j] else 0
-        if torch.rand(1).item() <= prob_i.item():
-            if s[j].nonzero().size()[0] == s.size()[0]-1: # node j connect to all other nodes (except itself)
-                return None, None # no negative edge exists!
-            # replace node i
-            i_prime = j
-            while i_prime == j or s[i_prime, j] != 0:
-                i_prime = torch.randint(s.size()[0], (1,)).item()
-            return i_prime, j
+    
+    def select_node(self, non_adj: Union[list, int]):
+        return random.choice(non_adj) if isinstance(non_adj, list) else non_adj
+    
+    def get_nonedge(self, s: Tensor):
+        non_adj = []
+        new_s = s.clone()
+        for i in range(s.size()[0]):
+            new_s[i,i] = 1
+            non_adj.append((new_s[i] == 0).nonzero().squeeze().tolist())
+        return non_adj
+    
+    def score_func(self, hidden: Tensor, i: int, j: int, weight: float):
+        if self.model_type == 'dynamic' or self.model_type == 'addgraph':
+            s = self.p_a * hidden[i] + self.p_b * hidden[j]
+            s = F.dropout(s, self.dropout, training=self.training)
+            score = weight * torch.sigmoid(self.beta * torch.norm(s, 2).pow(2) - self.mu)
         else:
-            if s[i].nonzero().size()[0] == s.size()[0]-1: # node i connect to all other nodes (except itself)
-                return None, None # no negative edge exists!
-            # replace node j
-            j_prime = i
-            while j_prime == i or s[i, j_prime] != 0:
-                j_prime = torch.randint(s.size()[0], (1,)).item()
-            return i, j_prime
+            score = weight * torch.sigmoid(hidden[i] @ hidden[j] - self.mu)
+        return score
 
+    # @profile
     def margin_loss(self, hidden: Tensor, G: Union[Data, Batch], split: str = 'train'):
         score = []
         all_nodes = 0
         
-        if split == 'train':
+        if split == 'train' or split == 'val':
             # hidden: |V| X E, G: |V| in |G|
             all_degrees = degree(G.edge_index[0], G.num_nodes)
             loss = 0
@@ -367,20 +333,29 @@ class EdgeDetectionModel(pl.LightningModule):
                 graph: Data = G[k]
                 graph_feature = hidden[all_nodes:all_nodes+graph.num_nodes]
                 degrees = all_degrees[all_nodes:all_nodes+graph.num_nodes]
+                if degrees.size()[0] == 2: # no negative edge exists!
+                    continue 
                 s = G.s[all_nodes:all_nodes+graph.num_nodes, all_nodes:all_nodes+graph.num_nodes]
+                non_adj = self.get_nonedge(s) # get non adjacent nodes
                 all_nodes += graph.num_nodes
                 for i, j in graph.edge_index.T.tolist():
                     pos_score = self.score_func(graph_feature, i, j, s[i, j])
-                    # Negative sampling
                     neg_score = float('-inf')
-                    search_time = 0
-                    while pos_score > neg_score and search_time < 10:
-                        i_prime, j_prime = self.neg_sampling(degrees, i, j, s)
-                        if (i_prime is not None) and (j_prime is not None):
-                            # Found effective negative edge
-                            neg_score = self.score_func(graph_feature, i_prime, j_prime, s[i, j])
-                        search_time += 1
+                    prob_ij = degrees[i]/(degrees[i] + degrees[j]).item() if degrees[i] + degrees[j] else 0
+                    # Negative sampling
+                    if (not non_adj[i]) and (not non_adj[j]): # node i and j connect to all other nodes
+                        continue # no negative edge exists!
+                    elif not non_adj[i]: # node i connect to all other nodes (except itself)
+                        i_prime, j_prime = self.select_node(non_adj[j]), j
+                    elif not non_adj[j]: # node j connect to all other nodes (except itself)
+                        i_prime, j_prime = i, self.select_node(non_adj[i])
+                    else:
+                        if random.random() <= prob_ij: # replace node i
+                            i_prime, j_prime = self.select_node(non_adj[j]), j
+                        else: # replace node j
+                            i_prime, j_prime = i, self.select_node(non_adj[i])
                     
+                    neg_score = self.score_func(graph_feature, i_prime, j_prime, s[i, j])
                     if pos_score <= neg_score:
                         edge_loss = F.relu(self.gamma + pos_score - neg_score)
                         # print('edge_loss', edge_loss)
@@ -430,6 +405,7 @@ class EdgeDetectionModel(pl.LightningModule):
         avg_loss = individual_loss.mean() # float
         return individual_loss, avg_loss
 
+    # @profile
     def training_step(self, batch: Union[Data, Batch], batch_idx: int, split: str = 'train'): 
         # Sampling subgraph
         if batch.num_nodes > self.max_length:
@@ -498,14 +474,14 @@ class EdgeDetectionModel(pl.LightningModule):
         # Calculate loss and save to dict
         if split == 'train' or split == 'val':
             if self.model_type in ['ae-gcnae', 'ae-mlpae', 'deeptralog']:
-                scores = torch.mean(F.mse_loss(x_, G.x, reduction='none'), dim=1) # |V|
                 if self.model_type == 'deeptralog':
                     individual_loss, loss = self.global_objective(x_, G)
                     # Update train L2 distances
                     if split == 'train':
                         self.train_dists.extend(individual_loss.detach().tolist())
                 else:
-                    loss = torch.mean(scores)
+                    loss = torch.mean(torch.mean(F.mse_loss(x_, G.x, reduction='none'), dim=1))
+                _, scores = self.margin_loss(x_, G, split=split) # |E|
             elif self.model_type in 'dynamic':
                 loss, scores = self.margin_loss(x_, G, split=split) # |E|
                 if self.multi_granularity:
@@ -522,11 +498,10 @@ class EdgeDetectionModel(pl.LightningModule):
                     loss = self.eta * torch.mean(scores) + (1 - self.eta) * margin_loss
                 else:
                     loss = torch.mean(scores)
+                _, scores = self.margin_loss(x_, G, split=split) # |E|
                     
             # Store training score distribution for analysis
-            if split == 'train':
-                if self.model_type not in ['dynamic', 'addgraph']:
-                    _, scores = self.margin_loss(x_, G, split='val') # |E|
+            if split == 'train':  
                 self.decision_scores.extend(scores.detach().cpu().tolist())
         else:
             loss, scores = self.margin_loss(x_, G, split=split) # |E|
@@ -570,8 +545,8 @@ class EdgeDetectionModel(pl.LightningModule):
                 self.thre_mean,
             ))
         elif split == 'val':
-            # val_loss = sum(scores) / event_scores.shape[0] if event_scores.shape[0] else 0
-            val_loss = sum(scores)
+            val_loss = sum(scores) / event_scores.shape[0] if event_scores.shape[0] else 0
+            # val_loss = sum(scores)
             print('Epoch {} val_loss: {:.4f}'.format(self.current_epoch, val_loss))
         else:
             event_labels = torch.cat([instance['labels'].detach().cpu() for instance in train_step_outputs], dim=0) # N
