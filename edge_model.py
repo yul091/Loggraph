@@ -44,6 +44,7 @@ import line_profiler
 import atexit
 profile = line_profiler.LineProfiler()
 atexit.register(profile.print_stats)
+import pdb
 
 
 class EdgeDetectionModel(pl.LightningModule):
@@ -311,14 +312,25 @@ class EdgeDetectionModel(pl.LightningModule):
             non_adj.append((new_s[i] == 0).nonzero().squeeze().tolist())
         return non_adj
     
-    def score_func(self, hidden: Tensor, i: int, j: int, weight: float):
+    def score_func(self, hidden: Tensor, rows: Tensor, cols: Tensor, weights: float):
+        # if self.model_type == 'dynamic' or self.model_type == 'addgraph':
+        #     s = self.p_a * hidden[i] + self.p_b * hidden[j]
+        #     s = F.dropout(s, self.dropout, training=self.training)
+        #     score = weight * torch.sigmoid(self.beta * torch.norm(s, 2).pow(2) - self.mu)
+        # else:
+        #     score = weight * torch.sigmoid(hidden[i] @ hidden[j] - self.mu)
+        # return score
+        # print("rows: ", rows)
+        hidden_i = hidden.index_select(0, rows) # |E| x d
+        hidden_j = hidden.index_select(0, cols) # |E| x d
         if self.model_type == 'dynamic' or self.model_type == 'addgraph':
-            s = self.p_a * hidden[i] + self.p_b * hidden[j]
+            s = self.p_a.expand_as(hidden_i) * hidden_i + self.p_b.expand_as(hidden_j) * hidden_j
             s = F.dropout(s, self.dropout, training=self.training)
-            score = weight * torch.sigmoid(self.beta * torch.norm(s, 2).pow(2) - self.mu)
+            score = weights * torch.sigmoid(self.beta * torch.norm(s, p=2, dim=1).pow(2) - self.mu) # |E|
         else:
-            score = weight * torch.sigmoid(hidden[i] @ hidden[j] - self.mu)
+            score = weights * torch.sigmoid((hidden_i + hidden_j).mean(dim=1) - self.mu) # |E|
         return score
+        
 
     # @profile
     def margin_loss(self, hidden: Tensor, G: Union[Data, Batch], split: str = 'train'):
@@ -338,9 +350,10 @@ class EdgeDetectionModel(pl.LightningModule):
                 s = G.s[all_nodes:all_nodes+graph.num_nodes, all_nodes:all_nodes+graph.num_nodes]
                 non_adj = self.get_nonedge(s) # get non adjacent nodes
                 all_nodes += graph.num_nodes
+                
+                rows, cols, new_rows, new_cols, weights = [], [], [], [], []
                 for i, j in graph.edge_index.T.tolist():
-                    pos_score = self.score_func(graph_feature, i, j, s[i, j])
-                    neg_score = float('-inf')
+                    # pos_score = self.score_func(graph_feature, i, j, s[i, j])
                     prob_ij = degrees[i]/(degrees[i] + degrees[j]).item() if degrees[i] + degrees[j] else 0
                     # Negative sampling
                     if (not non_adj[i]) and (not non_adj[j]): # node i and j connect to all other nodes
@@ -355,19 +368,36 @@ class EdgeDetectionModel(pl.LightningModule):
                         else: # replace node j
                             i_prime, j_prime = i, self.select_node(non_adj[i])
                     
-                    neg_score = self.score_func(graph_feature, i_prime, j_prime, s[i, j])
-                    if pos_score <= neg_score:
-                        edge_loss = F.relu(self.gamma + pos_score - neg_score)
-                        # print('edge_loss', edge_loss)
-                        loss += edge_loss
-                        score.append(pos_score.detach().cpu())
+                    rows.append(i)
+                    cols.append(j)
+                    new_rows.append(i_prime)
+                    new_cols.append(j_prime)
+                    weights.append(s[i, j])
+                    # neg_score = self.score_func(graph_feature, i_prime, j_prime, s[i, j])
+                    # if pos_score <= neg_score:
+                    #     edge_loss = F.relu(self.gamma + pos_score - neg_score)
+                    #     # print('edge_loss', edge_loss)
+                    #     loss += edge_loss
+                    #     score.append(pos_score.detach().cpu())
+                
+                rows = torch.tensor(rows, dtype=torch.long, device=hidden.device)
+                cols = torch.tensor(cols, dtype=torch.long, device=hidden.device)
+                new_rows = torch.tensor(new_rows, dtype=torch.long, device=hidden.device)
+                new_cols = torch.tensor(new_cols, dtype=torch.long, device=hidden.device)
+                weights = torch.tensor(weights, dtype=torch.float, device=hidden.device)
+                pos_scores = self.score_func(graph_feature, rows, cols, weights) # |E|
+                neg_scores = self.score_func(graph_feature, new_rows, new_cols, weights) # |E|
+                effective_edges = pos_scores <= neg_scores
+                edge_loss = F.relu(self.gamma + pos_scores - neg_scores)[effective_edges].sum()
+                loss += edge_loss
+                score.extend(pos_scores[effective_edges].detach().cpu().tolist())
 
             if not score:
                 score = torch.tensor([])
                 loss = torch.tensor(0.0, requires_grad=True)
                 return loss, score
             else:
-                score = torch.stack(score)
+                score = torch.tensor(score)
                 return loss/len(score), score
         else:
             for k in range(G.num_graphs): 
@@ -375,11 +405,19 @@ class EdgeDetectionModel(pl.LightningModule):
                 graph_feature = hidden[all_nodes:all_nodes+graph.num_nodes]
                 s = G.s[all_nodes:all_nodes+graph.num_nodes, all_nodes:all_nodes+graph.num_nodes]
                 all_nodes += graph.num_nodes
+                rows, cols, weights = [], [], []
                 for i, j in graph.edge_index.T.tolist():
-                    edge_score = self.score_func(graph_feature, i, j, s[i, j])
-                    score.append(edge_score.detach().cpu())
-                   
-            score = torch.stack(score) 
+                    rows.append(i)
+                    cols.append(j)
+                    weights.append(s[i, j])
+                    # edge_score = self.score_func(graph_feature, i, j, s[i, j])
+                    # score.append(edge_score.detach().cpu())
+                
+                pos_scores = self.score_func(graph_feature, rows, cols, weights)
+                score.extend(pos_scores.detach().cpu().tolist())
+                
+            # score = torch.stack(score) 
+            score = torch.tensor(score)
             return score.mean(), score
                         
 

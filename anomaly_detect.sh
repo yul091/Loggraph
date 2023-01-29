@@ -14,20 +14,20 @@ LR=1e-3
 ROOT=dataset/${DATANAME}/${LABEL_TECH}-node-${INTERVAL}-template-bertembed
 
 ################################################ Dynamic Models ##################################################
-# MODEL_TYPE=dynamic # ae-gcnae, ae-mlpae, ae-dominant, ae-conad, ae-anomalydae
-# MODEL_PATH=bert-base-uncased # facebook/bart-base, gpt2, xlnet-base-cased, bert-base-uncased, bert-base-cased
-# CKPT=results/${DATANAME}/${LABEL_TECH}-${CLASSIFICATION}/${INTERVAL}/dynamic-${MODEL_PATH}
+MODEL_TYPE=dynamic # ae-gcnae, ae-mlpae, ae-dominant, ae-conad, ae-anomalydae
+MODEL_PATH=bert-base-uncased # facebook/bart-base, gpt2, xlnet-base-cased, bert-base-uncased, bert-base-cased
+CKPT=results/${DATANAME}/${LABEL_TECH}-${CLASSIFICATION}/${INTERVAL}/dynamic-${MODEL_PATH}
 # CKPT=results/${DATANAME}/${LABEL_TECH}-${CLASSIFICATION}/${INTERVAL}/dynamic-${MODEL_PATH}-multi_granularity
 ##################################################################################################################
 
 ############################################### Baseline Models ##################################################
-MODEL_TYPE=addgraph # ae-gcnae, ae-mlpae, ae-dominant, ae-conad, ae-anomalydae, deeptralog, addgraph
-MODEL_PATH=bert-base-uncased # facebook/bart-base gpt2, xlnet-base-cased
-CKPT=results/${DATANAME}/${LABEL_TECH}-${CLASSIFICATION}/${INTERVAL}/${MODEL_TYPE} # gcn, mlp, etc.
+# MODEL_TYPE=addgraph # ae-gcnae, ae-mlpae, ae-dominant, ae-conad, ae-anomalydae, deeptralog, addgraph
+# MODEL_PATH=bert-base-uncased # facebook/bart-base gpt2, xlnet-base-cased
+# CKPT=results/${DATANAME}/${LABEL_TECH}-${CLASSIFICATION}/${INTERVAL}/${MODEL_TYPE} # gcn, mlp, etc.
 ##################################################################################################################
 
 
-CUDA_VISIBLE_DEVICES=3 python main.py \
+CUDA_VISIBLE_DEVICES=7 python main.py \
     --root ${ROOT} \
     --checkpoint_dir ${CKPT} \
     --train_batch_size ${TRAIN_BATCH_SIZE} \
@@ -42,6 +42,6 @@ CUDA_VISIBLE_DEVICES=3 python main.py \
     --weight_decay ${WEIGHT_DECAY} \
     --do_train \
     --do_eval \
-    --multi_granularity \
+    # --multi_granularity \
     --global_weight ${GLOBAL_WEIGHT} \
     --from_scratch
