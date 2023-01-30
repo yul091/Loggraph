@@ -38,9 +38,9 @@ class StructureAE(nn.Module):
         # encoder
         x = self.act(self.dense(x))
         x = F.dropout(x, self.dropout)
-        torch.use_deterministic_algorithms(False)
+        # torch.use_deterministic_algorithms(False)
         h = self.attention_layer(x, edge_index) # deterministic bug
-        torch.use_deterministic_algorithms(True)
+        # torch.use_deterministic_algorithms(True)
         # decoder
         s_ = torch.sigmoid(h @ h.T)
         return s_, h
@@ -126,16 +126,7 @@ class AnomalyDAE_Base(nn.Module):
             dropout,
             act,
         )
-    #     # Define edge score function parameters
-    #     self.p_a = nn.Parameter(torch.DoubleTensor(out_dim), requires_grad=False)
-    #     self.p_b = nn.Parameter(torch.DoubleTensor(out_dim), requires_grad=False)
-    #     self.reset_parameters()
-    
-    # def reset_parameters(self):
-    #     p_a_ = self.p_a.unsqueeze(0)
-    #     nn.init.xavier_uniform_(p_a_.data, gain=1.414)
-    #     p_b_ = self.p_b.unsqueeze(0)
-    #     nn.init.xavier_uniform_(p_b_.data, gain=1.414)
+
 
     def forward(
         self, 
