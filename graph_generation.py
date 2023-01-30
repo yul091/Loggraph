@@ -60,7 +60,7 @@ def handle_string(string: str):
             all_others.append(value)
             
     if user: 
-        if len(all_others) >= 13:
+        if len(all_others) >= 10:
             label = 1
         else:
             label = 0
@@ -82,6 +82,7 @@ def add_sock_shop_preds_to_df(struct_df: pd.DataFrame):
         
     struct_df['Preds'] = preds
     struct_df['Label'] = labels
+    print("Finished matching!!! Total number of anomalies: {}".format(sum(labels)))
 
 
 def add_preds_to_df(struct_df, inference_type='seq2seq', language_model=None, tokenizer=None, strategy=0):
@@ -166,7 +167,6 @@ def get_train_test_data(data_df):
     num_normal = normal_samples.shape[0]
     num_anomaly = anomaly_samples.shape[0]
     anomaly_rate = num_anomaly/num_total if num_total else 0
-    
     print('normal graphs: {}, anomaly graphs: {}'.format(num_normal, num_anomaly))
 
     train_df, test_normal_df = train_test_split(normal_samples, test_size=0.2, random_state=seed)
@@ -244,9 +244,8 @@ if __name__ == '__main__':
         default=False,
         help='Whether to use saved dataframe for generation')
     parser.add_argument('--seed', type=int, default=42)
-    
     args = parser.parse_args()
-
+    
     # Arguments
     common_dir = args.common_dir
     root = args.root # root dir
@@ -333,7 +332,6 @@ if __name__ == '__main__':
         # # Save pred_df for reusage
         # struct_data = Dataset.from_pandas(struct_df)
         # struct_data.to_json(pred_df_path)
-
 
         # Grouped by Time interval (or BlockId for HDFS)
         if 'HDFS' in log_file:

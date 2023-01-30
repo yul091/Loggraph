@@ -223,8 +223,12 @@ if __name__ == '__main__':
         all_labels = graph_data.graph_stats['label']
     else: # edge/node
         all_labels = np.array([0 if sum(x) == 0 else 1 for x in graph_data.graph_stats['label']])
+        all_logs = sum(len(x) for x in graph_data.graph_stats['label'])
+        all_anomalies = sum(sum(x) for x in graph_data.graph_stats['label'])
+        print("Total relations: {}, total anomalous relations: {}".format(all_logs, all_anomalies))
         
     anomaly_size = sum(all_labels)
+    print("Total graphs: {}, anomaly graphs: {}".format(len(all_labels), anomaly_size))
     normal_size = len(all_labels) - anomaly_size
 
     n_train = floor(normal_size*0.8) 

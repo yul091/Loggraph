@@ -1,5 +1,5 @@
 # Dynamic transformer + GCNAE
-DATANAME=BGL # AIT, BGL, sockshop
+DATANAME=AIT # AIT, BGL, sockshop
 LABEL_TECH=seq2seq # seq2seq, regex
 INTERVAL=0.5min # 3s, 5s, 10s, 0.5min, 1min, 2min, 5min, 10min, 30min
 TRAIN_BATCH_SIZE=32

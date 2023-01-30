@@ -18,7 +18,7 @@ MODEL_PATH=bert-base-uncased # facebook/bart-base, gpt2, xlnet-base-cased, bert-
 for MODEL_TYPE in ae-gcnae ae-mlpae ae-dominant ae-conad ae-anomalydae deeptralog addgraph
 do
     CKPT=results/${DATANAME}/${LABEL_TECH}-${CLASSIFICATION}/${INTERVAL}/${MODEL_TYPE} # gcn, mlp, etc.
-    CUDA_VISIBLE_DEVICES=6 python main.py \
+    CUDA_VISIBLE_DEVICES=1 python main.py \
         --root ${ROOT} \
         --checkpoint_dir ${CKPT} \
         --train_batch_size ${TRAIN_BATCH_SIZE} \
