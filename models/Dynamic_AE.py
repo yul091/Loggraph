@@ -1,9 +1,9 @@
 from transformers import (
     AutoConfig,
     AutoModel,
-    BartForConditionalGeneration,
 )
 from .SetGPT2 import GPT2LMHeadModel
+from .SetBart import BartForConditionalGeneration
 from .graph_base import torch, nn, F, Optional, GCN, Tensor, Adj, Batch
 from transformers.models.bart.modeling_bart import BartLearnedPositionalEmbedding
 

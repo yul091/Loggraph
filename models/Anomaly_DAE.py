@@ -38,9 +38,9 @@ class StructureAE(nn.Module):
         # encoder
         x = self.act(self.dense(x))
         x = F.dropout(x, self.dropout)
-        # torch.use_deterministic_algorithms(False)
+        torch.use_deterministic_algorithms(False)
         h = self.attention_layer(x, edge_index) # deterministic bug
-        # torch.use_deterministic_algorithms(True)
+        torch.use_deterministic_algorithms(True)
         # decoder
         s_ = torch.sigmoid(h @ h.T)
         return s_, h

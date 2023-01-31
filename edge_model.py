@@ -180,29 +180,30 @@ class EdgeDetectionModel(pl.LightningModule):
         
         if self.model_type in ['dynamic', 'addgraph']:
             # Define edge score function parameters
-            self.p_a = nn.Parameter(torch.DoubleTensor(self.embed_dim), requires_grad=True)
-            self.p_b = nn.Parameter(torch.DoubleTensor(self.embed_dim), requires_grad=True)
-            self.reset_parameters()
+            # self.p_a = nn.Parameter(torch.DoubleTensor(self.embed_dim), requires_grad=True)
+            # self.p_b = nn.Parameter(torch.DoubleTensor(self.embed_dim), requires_grad=True)
+            # self.reset_parameters()
+            self.p_a = nn.Linear(self.embed_dim, 1, bias=False)
+            self.p_b = nn.Linear(self.embed_dim, 1, bias=False)
         
         # Logging
         print('Created {} module \n{} \nwith {:,} GPUs {:,} workers'.format(
             self.model.__class__.__name__, self.model, self.n_gpus, self.n_workers))
-        # Save hyperparameters
-        self.decision_scores = []
         # Loss
         self.mse_loss = MSELoss(reduction='none')
         # Save hyperparameters
         self.global_outputs = defaultdict(np.array)
         self.global_labels = defaultdict(np.array)
         self.train_dists = []
+        self.decision_scores = []
         self.train_avg = torch.normal(mean=0, std=1, size=(self.embed_dim,)) # E
         self.save_hyperparameters()
         
-    def reset_parameters(self):
-        p_a_ = self.p_a.unsqueeze(0)
-        nn.init.xavier_uniform_(p_a_.data, gain=1.414)
-        p_b_ = self.p_b.unsqueeze(0)
-        nn.init.xavier_uniform_(p_b_.data, gain=1.414)
+    # def reset_parameters(self):
+    #     p_a_ = self.p_a.unsqueeze(0)
+    #     nn.init.xavier_uniform_(p_a_.data, gain=1.414)
+    #     p_b_ = self.p_b.unsqueeze(0)
+    #     nn.init.xavier_uniform_(p_b_.data, gain=1.414)
         
     @property
     def on_cuda(self):
@@ -324,9 +325,11 @@ class EdgeDetectionModel(pl.LightningModule):
         hidden_i = hidden.index_select(0, rows) # |E| x d
         hidden_j = hidden.index_select(0, cols) # |E| x d
         if self.model_type == 'dynamic' or self.model_type == 'addgraph':
-            s = self.p_a.expand_as(hidden_i) * hidden_i + self.p_b.expand_as(hidden_j) * hidden_j
-            s = F.dropout(s, self.dropout, training=self.training)
-            score = weights * torch.sigmoid(self.beta * torch.norm(s, p=2, dim=1).pow(2) - self.mu) # |E|
+            # s = self.p_a.expand_as(hidden_i) * hidden_i + self.p_b.expand_as(hidden_j) * hidden_j
+            # s = F.dropout(s, self.dropout, training=self.training)
+            # score = weights * torch.sigmoid(self.beta * torch.norm(s, p=2, dim=1).pow(2) - self.mu) # |E|
+            s = (self.p_a(hidden_i) + self.p_b(hidden_j)).squeeze(1) # |E|
+            score = weights * torch.sigmoid(self.beta * s - self.mu) # |E|
         else:
             score = weights * torch.sigmoid((hidden_i + hidden_j).mean(dim=1) - self.mu) # |E|
         return score
@@ -511,26 +514,20 @@ class EdgeDetectionModel(pl.LightningModule):
         
         # Handling scores and loss
         labels = G.y
+        individual_loss, avg_loss = self.global_objective(x_, G)
         
         # Calculate loss and save to dict
         if split == 'train' or split == 'val':
             if self.model_type in ['ae-gcnae', 'ae-mlpae', 'deeptralog']:
                 if self.model_type == 'deeptralog':
-                    individual_loss, loss = self.global_objective(x_, G)
-                    # Update train L2 distances
-                    if split == 'train':
-                        self.train_dists.extend(individual_loss.detach().tolist())
+                    loss = avg_loss
                 else:
                     loss = torch.mean(torch.mean(F.mse_loss(x_, G.x, reduction='none'), dim=1))
                 _, scores = self.margin_loss(x_, G, split=split) # |E|
             elif self.model_type in 'dynamic':
                 loss, scores = self.margin_loss(x_, G, split=split) # |E|
                 if self.multi_granularity:
-                    individual_loss, avg_loss = self.global_objective(x_, G)
                     loss = loss + self.global_weight * avg_loss # B
-                    # Update train L2 distances
-                    if split == 'train':
-                        self.train_dists.extend(individual_loss.detach().tolist())
             elif self.model_type == 'addgraph':
                 loss, scores = self.margin_loss(x_, G, split=split) # |E|
             else: # ae-conad, ae-dominant, ae-anomalydae
@@ -544,85 +541,157 @@ class EdgeDetectionModel(pl.LightningModule):
             # Store training score distribution for analysis
             if split == 'train':  
                 self.decision_scores.extend(scores.detach().cpu().tolist())
+                # Update train L2 distances
+                self.train_dists.extend(individual_loss.detach().tolist())
         else:
             loss, scores = self.margin_loss(x_, G, split=split) # |E|
             if self.model_type == 'dynamic' and self.multi_granularity:
-                individual_loss, avg_loss = self.global_objective(x_, G)
                 loss = loss + self.global_weight * avg_loss # B
 
             labels = G.y[:scores.shape[0]] # needed when some of the nodes are cut
         
+        # print("G.x {}: {}".format(G.x.shape, G.x))
+        # print("G.y {}: {}".format(G.y.shape, G.y))
+        # print("G.node_label {}: {}".format(G.node_label.shape, G.node_label))
+        # print("G.batch {}: {}".format(G.batch.shape, G.batch))
         logging_dict = {'train_loss': loss.detach().item()}
+        graph_labels = []
+        for k in range(G.num_graphs): 
+            graph: Data = G[k]
+            graph_labels.append(int(graph.y.sum().item() > 0))
+        graph_labels = torch.tensor(graph_labels)
+        # graph_labels = [int(G.node_label[G.batch == i].sum().item() > 0) for i in range(G.num_graphs)]
         
         return {
             'loss': loss,
+            'graph_loss': individual_loss,
             'scores': scores,
             'preds': x_, 
             'labels': labels,
+            'graph_labels': graph_labels,
             'log': logging_dict, # Tensorboard logging for training
             'progress_bar': logging_dict, # Progress bar logging for TQDM
         }
 
     def training_epoch_end(self, train_step_outputs: List[dict], split: str = 'train'):
-        event_scores = torch.cat([instance['scores'].detach().cpu() for instance in train_step_outputs], dim=0) # N
+        event_scores = torch.cat([ins['scores'].detach().cpu() for ins in train_step_outputs], dim=0) # N
         scores = event_scores.numpy() # N
         
         if split == 'train':
-            if self.multi_granularity and self.model_type == 'dynamic':
-                # Update average train feature vector
-                preds = [instance['preds'].detach().cpu() for instance in train_step_outputs] 
-                self.train_avg = torch.cat(preds, dim=0).mean(dim=0) 
+            preds = [ins['preds'].detach().cpu() for ins in train_step_outputs] 
             # Update train dists and thresholds
             sorted_scores = sorted(scores)
             self.thre_max = max(scores)
             self.thre_mean = np.mean(scores)
             self.thre_top80 = sorted_scores[int(0.8*len(scores))]
-            self.train_dists = []
-        
             print("Epoch {} max thre {:.4f}, 80% thre {:.4f}, mean thre {:.4f}".format(
                 self.current_epoch, 
                 self.thre_max, 
                 self.thre_top80, 
                 self.thre_mean,
             ))
+            # Update graph train dists and thresholds
+            self.train_avg = torch.cat(preds, dim=0).mean(dim=0) 
+            sorted_train_dists = sorted(self.train_dists)
+            self.thre_graph_max = max(self.train_dists)
+            self.thre_graph_mean = np.mean(self.train_dists)
+            self.thre_graph_top80 = sorted_train_dists[int(0.8*len(self.train_dists))]
+            self.train_dists = []
+            print("[Graph-level] train avg (sum) {}, max thre {:.4f}, 80% thre {:.4f}, mean thre {:.4f}".format(
+                self.train_avg.sum(), 
+                self.thre_max, 
+                self.thre_top80, 
+                self.thre_mean,
+            ))
+            
         elif split == 'val':
             val_loss = sum(scores) / event_scores.shape[0] if event_scores.shape[0] else 0
             # val_loss = sum(scores)
             print('Epoch {} val_loss: {:.4f}'.format(self.current_epoch, val_loss))
         else:
-            event_labels = torch.cat([instance['labels'].detach().cpu() for instance in train_step_outputs], dim=0) # N
-            scores = torch.cat([instance['scores'].detach().cpu() for instance in train_step_outputs], dim=0).numpy() # N
-            labels = event_labels.numpy() # N
-            if not hasattr(self, 'thre_max'):
-                if self.decision_scores:
-                    sorted_scores = sorted(self.decision_scores)
+            event_labels = torch.cat([ins['labels'].detach().cpu() for ins in train_step_outputs], dim=0) # N
+            scores = torch.cat([ins['scores'].detach().cpu() for ins in train_step_outputs], dim=0).numpy() # N
+            labels = event_labels.numpy() # |E|
+            num_anomalies = sum(labels)
+            normal_rate = 1 - num_anomalies / len(labels)
+            
+            ####################################################################################################################
+            # # Sample normal samples -> keep 1: 1 ratio
+            # anomaly_ids = np.where(labels == 1)[0].tolist()
+            # normal_ids = np.where(labels == 0)[0].tolist()
+            # if len(normal_ids) > num_anomalies:
+            #     subnormal_ids = random.sample(normal_ids, num_anomalies)
+            #     new_ids = sorted(anomaly_ids + subnormal_ids)
+            #     scores = scores[new_ids]
+            #     labels = labels[new_ids]
+            #     normal_rate = 0.5
+            ####################################################################################################################
+            
+            if self.decision_scores:
+                sorted_scores = sorted(self.decision_scores)
+                if not hasattr(self, 'thre_max'):
                     self.thre_max = max(self.decision_scores)
+                if not hasattr(self, 'thre_mean'):
                     self.thre_mean = np.mean(self.decision_scores)
+                if not hasattr(self, 'thre_top80'):
                     self.thre_top80 = sorted_scores[int(0.8*len(self.decision_scores))]
-                else:
-                    self.thre_max, self.thre_top80, self.thre_mean = 0.5, 0.5, 0.5
-            print("Predicting {} test samples, {} ({:.2f}%) anomalies, using max thre {:.4f}, 80% thre {:.4f}, mean thre {:.4f}".format(
+                if not hasattr(self, 'thre_adapt'):
+                    self.thre_adapt = sorted_scores[int(normal_rate*len(self.decision_scores))]
+            else:
+                print("Using default threshold 0.5 for anomaly detection !!!")
+                self.thre_max, self.thre_top80, self.thre_mean, self.thre_adapt = 0.8, 0.8, 0.5, 0.8
+            print("Predicting {} test samples, {} ({:.2f}%) anomalies, using max thre {:.4f}, adapt thre {:.4f}, 80% thre {:.4f}, mean thre {:.4f}".format(
                 len(labels),
                 sum(labels),
                 sum(labels)*100/len(labels),
                 self.thre_max, 
+                self.thre_adapt,
                 self.thre_top80, 
                 self.thre_mean,
             ))
+            
+            graph_loss = [ins['graph_loss'].detach().cpu() for ins in train_step_outputs]
+            graph_loss = torch.cat(graph_loss, dim=0).numpy() # |G|
+            graph_labels = torch.cat([ins['graph_labels'].detach().cpu() for ins in train_step_outputs], dim=0) 
+            graph_labels = graph_labels.numpy() # |G|
+            num_graph_anomalies = sum(graph_labels)
+            normal_graph_rate = 1 - num_graph_anomalies / len(graph_labels)
+            
+            if self.train_dists:
+                sorted_train_dists = sorted(self.train_dists)
+                if not hasattr(self, 'thre_graph_max'):
+                    self.thre_graph_max = max(self.train_dists)
+                if not hasattr(self, 'thre_graph_mean'):
+                    self.thre_graph_mean = np.mean(self.train_dists)
+                if not hasattr(self, 'thre_graph_top80'):
+                    self.thre_graph_top80 = sorted_train_dists[int(0.8*len(self.train_dists))]
+                if not hasattr(self, 'thre_graph_adapt'):
+                    self.thre_graph_adapt = sorted_train_dists[int(normal_graph_rate*len(self.train_dists))]
+            else:
+                print("Using default threshold 0.5 for graph anomaly detection !!!")
+                self.thre_graph_max, self.thre_graph_top80, self.thre_graph_mean, self.thre_graph_adapt = 0.8, 0.8, 0.5, 0.8
+            
             # Calculating AUC
             auc_score = cal_auc_score(labels, scores)
             aupr_score = cal_aupr_score(labels, scores)
+            graph_auc_score = cal_auc_score(graph_labels, graph_loss)
+            graph_aupr_score = cal_aupr_score(graph_labels, graph_loss)
+            
             # Threshold
             thre_dict = {
                 'top80%': self.thre_top80, 
                 'mean': self.thre_mean, 
-                # 'max': self.thre_max,
+                'adapt': self.thre_adapt,
             }
             pred_dict = defaultdict(np.array)
             for name, threshold in thre_dict.items():
                 acc_score = cal_accuracy(labels, scores, threshold)
                 pred_array, cls_report = cal_cls_report(labels, scores, threshold, output_dict=True)
-                pred_results = {'AUC': [auc_score], 'AUPR': [aupr_score], 'ACC({})'.format(name): [acc_score]}
+                pred_results = {
+                    'AUC': [auc_score], 
+                    'AUPR': [aupr_score], 
+                    'ACC({})'.format(name): [acc_score],
+                }
                 stat_df = pd.DataFrame(pred_results)
                 cls_df = pd.DataFrame(cls_report).transpose()
                 pred_dict[name] = pred_array
@@ -635,6 +704,30 @@ class EdgeDetectionModel(pl.LightningModule):
             pred_dict['GT'] = labels
             pred_df = pd.DataFrame(pred_dict)
             pred_df.to_csv(os.path.join(self.checkpoint_dir, f'predictions.csv'))
+            
+            # Threshold (Graph)
+            thre_dict = {
+                'top80%': self.thre_graph_top80, 
+                'mean': self.thre_graph_mean, 
+                'adapt': self.thre_graph_adapt,
+            }
+            for name, threshold in thre_dict.items():
+                # print("graph labels {}, graph loss {}".format(graph_labels, graph_loss))
+                acc_score = cal_accuracy(graph_labels, graph_loss, threshold)
+                pred_array, cls_report = cal_cls_report(graph_labels, graph_loss, threshold, output_dict=True)
+                pred_results = {
+                    'AUC': [graph_auc_score], 
+                    'AUPR': [graph_aupr_score], 
+                    'ACC({})'.format(name): [acc_score],
+                }
+                stat_df = pd.DataFrame(pred_results)
+                cls_df = pd.DataFrame(cls_report).transpose()
+                pred_dict[name] = pred_array
+                print(stat_df)
+                print(cls_df)
+                # Save predicting results (regarding each threshold)
+                stat_df.to_csv(os.path.join(self.checkpoint_dir, f'predict-results-{name}(graph).csv'))
+                cls_df.to_csv(os.path.join(self.checkpoint_dir, f'predict-cls-report-{name}(graph).csv'))
 
         
     def validation_step(self, batch: Data, batch_idx: int, *args, **kwargs):
@@ -648,6 +741,8 @@ class EdgeDetectionModel(pl.LightningModule):
             'labels': loss_dict['labels'],
             'log': log_dict,
             'progress_bar': log_dict,
+            'graph_loss': loss_dict['graph_loss'],
+            'graph_labels': loss_dict['graph_labels'],
         }
     
     def validation_epoch_end(self, validation_step_outputs: List[dict]):
@@ -664,6 +759,8 @@ class EdgeDetectionModel(pl.LightningModule):
             'labels': loss_dict['labels'],
             'log': log_dict, # Tensorboard logging
             'progress_bar': log_dict, # Progress bar logging for TQDM
+            'graph_loss': loss_dict['graph_loss'],
+            'graph_labels': loss_dict['graph_labels'],
         }
 
     def test_epoch_end(self, test_step_outputs: List[dict]):
